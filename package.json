@@ -1,0 +1,13 @@
+{
+  "name": "keypool",
+  "version": "0.1.0",
+  "description": "API Key pool proxy for OpenAI-compatible LLM services",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "keywords": ["openai", "proxy", "key-pool", "llm"],
+  "license": "MIT"
+}

@@ -1,0 +1,17 @@
+{
+  "port": 9200,
+  "baseUrl": "https://api.openai.com",
+  "logLevel": "info",
+  "healthCheckIntervalMs": 300000,
+  "keyRetryDelayMs": 60000,
+  "keys": [
+    {
+      "id": "key-1",
+      "key": "sk-your-openai-key-here"
+    },
+    {
+      "id": "key-2",
+      "key": "sk-another-key-here"
+    }
+  ]
+}
