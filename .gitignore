@@ -2,3 +2,8 @@ node_modules/
 config.json
 .tunnel-url
 *.log
+.cookie
+.renew-state.json
+.key-exchange-state.json
+.tunnel-url
+config.json
