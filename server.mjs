@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { spawn } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -190,6 +191,8 @@ const LOG_LEVEL = config.logLevel || "info";
 const HEALTH_CHECK_INTERVAL = config.healthCheckIntervalMs || 5 * 60 * 1000; // 5 min
 const KEY_RETRY_DELAY = config.keyRetryDelayMs || 60 * 1000; // 1 min
 const AVAILABLE_MODELS = config.models || []; // 可用模型列表
+const TUNNEL_ENABLED = config.tunnel !== false; // 默认开启
+const TUNNEL_SERVICE = config.tunnelService || "localhost.run"; // serveo.net | localhost.run
 
 const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLogLevel = LOG_LEVELS[LOG_LEVEL] ?? 1;
@@ -475,11 +478,16 @@ function handleRequest(req, res) {
 
   // ── Catch-all: usage info ──
   res.writeHead(200, { "content-type": "application/json" });
+  let tunnelUrl = null;
+  try {
+    const urlFile = resolve(__dirname, ".tunnel-url");
+    if (existsSync(urlFile)) tunnelUrl = readFileSync(urlFile, "utf-8").trim();
+  } catch {}
   res.end(
     JSON.stringify(
       {
         name: "KeyPool",
-        version: "0.2.0",
+        version: "0.3.0",
         description: "OpenAI API Key Pool Proxy",
         endpoints: {
           "POST /v1/chat/completions": "Chat completions (OpenAI compatible)",
@@ -491,7 +499,8 @@ function handleRequest(req, res) {
         },
         keys: pool.keys.length,
         models: AVAILABLE_MODELS.length,
-        usage: `Set OPENAI_BASE_URL to http://127.0.0.1:${PORT}/v1`,
+        tunnel: tunnelUrl || "disabled",
+        usage: `Set OPENAI_BASE_URL to http://127.0.0.1:${PORT}/v1${tunnelUrl ? ` or ${tunnelUrl}/v1` : ""}`,
       },
       null,
       2
@@ -514,15 +523,88 @@ server.listen(PORT, () => {
   }
   log("info", `   Set OPENAI_BASE_URL=http://127.0.0.1:${PORT}/v1 to use`);
   log("info", `   GET /pool/stats for usage, GET /health for status`);
+
+  // 启动 SSH 隧道
+  startTunnel(PORT);
 });
+
+// ─── SSH Tunnel ───────────────────────────────────────────────────────
+let tunnelProcess = null;
+
+function startTunnel(port) {
+  if (!TUNNEL_ENABLED) return;
+
+  let cmd, args;
+  if (TUNNEL_SERVICE === "serveo.net") {
+    cmd = "ssh";
+    args = ["-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-R", `80:localhost:${port}`, "serveo.net"];
+  } else {
+    // localhost.run — 不需要注册，支持自定义域名
+    cmd = "ssh";
+    args = ["-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=60", "-R", `80:localhost:${port}`, "nokey@localhost.run"];
+  }
+
+  log("info", `🌐 正在建立 SSH 隧道 (${TUNNEL_SERVICE})...`);
+
+  tunnelProcess = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+  let urlFound = false;
+
+  const handleOutput = (data) => {
+    const text = data.toString();
+    // 解析输出中的公网 URL
+    const match = text.match(/(https?:\/\/[a-zA-Z0-9._-]+\.(?:lhr\.life|serveo\.net)[^\s]*)/);
+    if (match && !urlFound) {
+      urlFound = true;
+      const publicUrl = match[1];
+      console.log("");
+      console.log("╔══════════════════════════════════════════════════════════╗");
+      console.log("║  🌐 公网地址已就绪                                       ║");
+      console.log("╠══════════════════════════════════════════════════════════╣");
+      console.log(`║  ${publicUrl.padEnd(55)}║`);
+      console.log("║                                                          ║");
+      console.log(`║  API:  ${`${publicUrl}/v1/chat/completions`.padEnd(48)}║`);
+      console.log(`║  统计:  ${`${publicUrl}/pool/stats`.padEnd(47)}║`);
+      console.log(`║  健康:  ${`${publicUrl}/health`.padEnd(47)}║`);
+      console.log("╚══════════════════════════════════════════════════════════╝");
+      console.log("");
+
+      // 写入文件方便其他服务读取
+      try {
+        writeFileSync(resolve(__dirname, ".tunnel-url"), publicUrl + "\n", "utf-8");
+      } catch {}
+    }
+    // 其他有用的信息也打印
+    if (!match && text.trim() && !text.includes("Warning")) {
+      log("debug", `[tunnel] ${text.trim()}`);
+    }
+  };
+
+  tunnelProcess.stdout.on("data", handleOutput);
+  tunnelProcess.stderr.on("data", handleOutput);
+
+  tunnelProcess.on("error", (err) => {
+    log("warn", `SSH 隧道启动失败: ${err.message}`);
+    log("info", "提示: 确保已安装 ssh 客户端，或在 config.json 中设置 \"tunnel\": false 关闭");
+  });
+
+  tunnelProcess.on("close", (code) => {
+    if (code !== 0 && code !== null) {
+      log("warn", `SSH 隧道断开 (code ${code})，30 秒后重连...`);
+      setTimeout(() => startTunnel(port), 30000);
+    }
+  });
+}
 
 // Graceful shutdown
 process.on("SIGINT", () => {
   log("info", "Shutting down...");
+  if (tunnelProcess) tunnelProcess.kill();
   server.close();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
+  if (tunnelProcess) tunnelProcess.kill();
   server.close();
   process.exit(0);
 });

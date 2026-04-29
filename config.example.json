@@ -6,6 +6,8 @@
   "logLevel": "info",
   "healthCheckIntervalMs": 300000,
   "keyRetryDelayMs": 60000,
+  "tunnel": true,
+  "// tunnelService": "serveo.net 或 localhost.run（默认 localhost.run）",
 
   "// keys": [
   "//   { \"id\": \"my-key-1\", \"key\": \"sk-...\" },
