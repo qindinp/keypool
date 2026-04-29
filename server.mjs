@@ -410,6 +410,362 @@ function proxyRequest(keyEntry, req, res) {
   req.pipe(proxyReq);
 }
 
+// ─── Anthropic ↔ OpenAI 格式转换 ─────────────────────────────────────
+
+/** Anthropic messages → OpenAI chat completions */
+function anthropicToOpenAI(body) {
+  const messages = [];
+
+  // system 提取
+  if (body.system) {
+    if (typeof body.system === "string") {
+      messages.push({ role: "system", content: body.system });
+    } else if (Array.isArray(body.system)) {
+      const text = body.system.map((b) => b.text || "").join("\n");
+      messages.push({ role: "system", content: text });
+    }
+  }
+
+  // messages 转换
+  for (const msg of body.messages || []) {
+    const role = msg.role;
+    let content;
+
+    if (typeof msg.content === "string") {
+      content = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      const parts = [];
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          parts.push(block.text);
+        } else if (block.type === "image") {
+          // 转成 OpenAI vision 格式
+          parts.push({
+            type: "image_url",
+            image_url: {
+              url: block.source?.type === "base64"
+                ? `data:${block.source.media_type};base64,${block.source.data}`
+                : block.source?.url || "",
+            },
+          });
+        } else if (block.type === "tool_use") {
+          // tool_use → assistant tool_calls
+          // 需要特殊处理，先简化
+          parts.push(`[tool_use: ${block.name}]`);
+        } else if (block.type === "tool_result") {
+          parts.push(typeof block.content === "string" ? block.content : JSON.stringify(block.content));
+        }
+      }
+      content = parts.length === 1 && typeof parts[0] === "string" ? parts[0] : parts;
+    }
+
+    messages.push({ role, content });
+  }
+
+  const result = {
+    model: body.model || "gpt-4",
+    messages,
+    max_tokens: body.max_tokens || 4096,
+    stream: !!body.stream,
+  };
+
+  if (body.temperature !== undefined) result.temperature = body.temperature;
+  if (body.top_p !== undefined) result.top_p = body.top_p;
+  if (body.stop_sequences) result.stop = body.stop_sequences;
+
+  return result;
+}
+
+/** OpenAI response → Anthropic message format */
+function openAIToAnthropic(oaiResp, model) {
+  const choice = oaiResp.choices?.[0];
+  if (!choice) {
+    return {
+      id: `msg_${oaiResp.id || randomId()}`,
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      model,
+      stop_reason: "end_turn",
+      usage: { input_tokens: 0, output_tokens: 0 },
+    };
+  }
+
+  const content = [];
+  if (choice.message?.reasoning_content) {
+    content.push({ type: "thinking", thinking: choice.message.reasoning_content });
+  }
+  if (choice.message?.content) {
+    content.push({ type: "text", text: choice.message.content });
+  }
+  if (content.length === 0) {
+    content.push({ type: "text", text: "" });
+  }
+
+  const stopReason = {
+    stop: "end_turn",
+    length: "max_tokens",
+    "tool_calls": "tool_use",
+    content_filter: "end_turn",
+  }[choice.finish_reason] || "end_turn";
+
+  return {
+    id: `msg_${oaiResp.id || randomId()}`,
+    type: "message",
+    role: "assistant",
+    content,
+    model,
+    stop_reason: stopReason,
+    usage: {
+      input_tokens: oaiResp.usage?.prompt_tokens || 0,
+      output_tokens: oaiResp.usage?.completion_tokens || 0,
+    },
+  };
+}
+
+/** OpenAI SSE chunk → Anthropic SSE events */
+function openAIChunkToAnthropicEvents(chunk, state) {
+  const events = [];
+  const choice = chunk.choices?.[0];
+
+  if (!choice) return events;
+
+  // 首个 chunk → message_start
+  if (!state.started) {
+    state.started = true;
+    events.push({
+      type: "message_start",
+      message: {
+        id: `msg_${chunk.id || randomId()}`,
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: chunk.model || state.model,
+        stop_reason: null,
+        usage: { input_tokens: chunk.usage?.prompt_tokens || 0, output_tokens: 0 },
+      },
+    });
+  }
+
+  // reasoning_content → thinking delta
+  if (choice.delta?.reasoning_content) {
+    if (!state.thinkingStarted) {
+      state.thinkingStarted = true;
+      events.push({ type: "content_block_start", index: state.blockIndex, content_block: { type: "thinking", thinking: "" } });
+    }
+    events.push({ type: "content_block_delta", index: state.blockIndex, delta: { type: "thinking_delta", thinking: choice.delta.reasoning_content } });
+  }
+
+  // content → text delta
+  if (choice.delta?.content) {
+    if (!state.textStarted) {
+      // 关闭 thinking block
+      if (state.thinkingStarted && !state.thinkingClosed) {
+        state.thinkingClosed = true;
+        events.push({ type: "content_block_stop", index: state.blockIndex });
+        state.blockIndex++;
+      }
+      state.textStarted = true;
+      events.push({ type: "content_block_start", index: state.blockIndex, content_block: { type: "text", text: "" } });
+    }
+    events.push({ type: "content_block_delta", index: state.blockIndex, delta: { type: "text_delta", text: choice.delta.content } });
+  }
+
+  // finish → stop
+  if (choice.finish_reason) {
+    // 关闭未关的 block
+    if (state.textStarted && !state.textClosed) {
+      state.textClosed = true;
+      events.push({ type: "content_block_stop", index: state.blockIndex });
+    } else if (state.thinkingStarted && !state.thinkingClosed) {
+      state.thinkingClosed = true;
+      events.push({ type: "content_block_stop", index: state.blockIndex });
+    }
+
+    const stopReason = {
+      stop: "end_turn",
+      length: "max_tokens",
+      "tool_calls": "tool_use",
+    }[choice.finish_reason] || "end_turn";
+
+    events.push({ type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: chunk.usage?.completion_tokens || 0 } });
+    events.push({ type: "message_stop" });
+  }
+
+  return events;
+}
+
+function randomId() {
+  return Math.random().toString(36).slice(2, 14);
+}
+
+/** 同步代理：Anthropic 请求 → OpenAI 上游 → Anthropic 响应 */
+function proxyAnthropicSync(keyEntry, openaiReq, model, res) {
+  const target = getTargetFor(keyEntry);
+  const headers = {
+    "content-type": "application/json",
+    "authorization": `Bearer ${keyEntry.key}`,
+  };
+  const body = JSON.stringify(openaiReq);
+  const requester = target.isHttps ? httpsRequest : httpRequest;
+
+  const opts = {
+    hostname: target.hostname,
+    port: target.port,
+    path: "/v1/chat/completions",
+    method: "POST",
+    headers: { ...headers, "content-length": Buffer.byteLength(body) },
+  };
+
+  const proxyReq = requester(opts, (proxyRes) => {
+    let respBody = "";
+    proxyRes.on("data", (c) => (respBody += c));
+    proxyRes.on("end", () => {
+      if (proxyRes.statusCode >= 400) {
+        pool.markError(keyEntry, proxyRes.statusCode, respBody);
+        // 重试
+        if ([401, 403, 429].includes(proxyRes.statusCode)) {
+          const retryKey = pool.pick();
+          if (retryKey && retryKey.id !== keyEntry.id) {
+            log("info", `Anthropic retry with key ${retryKey.id}`);
+            return proxyAnthropicSync(retryKey, openaiReq, model, res);
+          }
+        }
+        res.writeHead(proxyRes.statusCode, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: respBody } }));
+      }
+
+      try {
+        const oaiResp = JSON.parse(respBody);
+        const anthropicResp = openAIToAnthropic(oaiResp, model);
+        const tokens = oaiResp.usage?.total_tokens || 0;
+        pool.markSuccess(keyEntry, tokens);
+        log("info", `✓ /v1/messages [${keyEntry.id}] ${tokens} tokens (anthropic)`);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(anthropicResp));
+      } catch (e) {
+        log("error", `Anthropic response conversion error: ${e.message}`);
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: e.message } }));
+      }
+    });
+  });
+
+  proxyReq.on("error", (err) => {
+    pool.markError(keyEntry, 0, err.message);
+    log("error", `Anthropic proxy error [${keyEntry.id}]: ${err.message}`);
+    res.writeHead(502, { "content-type": "application/json" });
+    res.end(JSON.stringify({ type: "error", error: { type: "proxy_error", message: err.message } }));
+  });
+
+  proxyReq.write(body);
+  proxyReq.end();
+}
+
+/** 流式代理：Anthropic SSE 请求 → OpenAI 流式上游 → Anthropic SSE 事件 */
+function proxyAnthropicStream(keyEntry, openaiReq, model, res) {
+  const target = getTargetFor(keyEntry);
+  const headers = {
+    "content-type": "application/json",
+    "authorization": `Bearer ${keyEntry.key}`,
+  };
+  const body = JSON.stringify({ ...openaiReq, stream: true });
+  const requester = target.isHttps ? httpsRequest : httpRequest;
+
+  const opts = {
+    hostname: target.hostname,
+    port: target.port,
+    path: "/v1/chat/completions",
+    method: "POST",
+    headers: { ...headers, "content-length": Buffer.byteLength(body) },
+  };
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    "connection": "keep-alive",
+  });
+
+  const state = { started: false, blockIndex: 0, thinkingStarted: false, thinkingClosed: false, textStarted: false, textClosed: false, model };
+
+  const proxyReq = requester(opts, (proxyRes) => {
+    if (proxyRes.statusCode >= 400) {
+      let errBody = "";
+      proxyRes.on("data", (c) => (errBody += c));
+      proxyRes.on("end", () => {
+        pool.markError(keyEntry, proxyRes.statusCode, errBody);
+        const event = { type: "error", error: { type: "api_error", message: errBody } };
+        res.write(`event: error\ndata: ${JSON.stringify(event)}\n\n`);
+        res.end();
+      });
+      return;
+    }
+
+    let buffer = "";
+    let usage = null;
+
+    proxyRes.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") continue;
+
+        try {
+          const oaiChunk = JSON.parse(data);
+          if (oaiChunk.usage) usage = oaiChunk.usage;
+
+          const events = openAIChunkToAnthropicEvents(oaiChunk, state);
+          for (const event of events) {
+            res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+          }
+        } catch {}
+      }
+    });
+
+    proxyRes.on("end", () => {
+      // 处理 buffer 中剩余数据
+      if (buffer.startsWith("data: ") && buffer.slice(6).trim() !== "[DONE]") {
+        try {
+          const oaiChunk = JSON.parse(buffer.slice(6));
+          if (oaiChunk.usage) usage = oaiChunk.usage;
+          const events = openAIChunkToAnthropicEvents(oaiChunk, state);
+          for (const event of events) {
+            res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+          }
+        } catch {}
+      }
+
+      // 确保 message_stop 被发送
+      if (!state.textClosed && !state.thinkingClosed) {
+        if (state.started) {
+          res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
+          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+        }
+      }
+
+      res.end();
+      const tokens = usage?.total_tokens || 0;
+      pool.markSuccess(keyEntry, tokens);
+      log("info", `✓ /v1/messages [${keyEntry.id}] ${tokens} tokens (anthropic stream)`);
+    });
+  });
+
+  proxyReq.on("error", (err) => {
+    pool.markError(keyEntry, 0, err.message);
+    log("error", `Anthropic stream proxy error [${keyEntry.id}]: ${err.message}`);
+    const event = { type: "error", error: { type: "proxy_error", message: err.message } };
+    res.write(`event: error\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  });
+
+  proxyReq.write(body);
+  proxyReq.end();
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────
 function handleRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -443,6 +799,39 @@ function handleRequest(req, res) {
     const enabled = pool.keys.filter((k) => k.enabled).length;
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify({ status: "ok", enabledKeys: enabled, totalKeys: pool.keys.length }));
+  }
+
+  // ── Anthropic API: POST /v1/messages ──
+  if (path === "/v1/messages" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const anthropicReq = JSON.parse(body);
+        const keyEntry = pool.pick();
+        if (!keyEntry) {
+          res.writeHead(503, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "No available API keys" } }));
+        }
+
+        const openaiReq = anthropicToOpenAI(anthropicReq);
+        const model = anthropicReq.model || "gpt-4";
+        const isStream = !!anthropicReq.stream;
+
+        log("info", `→ POST /v1/messages [${keyEntry.id}] Anthropic→OpenAI (model: ${model}, stream: ${isStream})`);
+
+        if (isStream) {
+          proxyAnthropicStream(keyEntry, openaiReq, model, res);
+        } else {
+          proxyAnthropicSync(keyEntry, openaiReq, model, res);
+        }
+      } catch (e) {
+        log("error", `Anthropic request parse error: ${e.message}`);
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: e.message } }));
+      }
+    });
+    return;
   }
 
   // ── /v1/models — 优先返回本地已知模型列表 ──
