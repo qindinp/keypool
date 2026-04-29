@@ -9,17 +9,17 @@
 git clone https://github.com/YOUR_USER/keypool.git
 cd keypool
 
-# 2. 配置 API Keys
-cp config.example.json config.json
-# 编辑 config.json，填入你的 API Keys
-
-# 3. 启动
+# 2. 启动（自动读取 OpenClaw 配置，无需手动填 key！）
 node server.mjs
 
-# 4. 使用
+# 3. 使用
 # 将你的应用的 OpenAI base URL 指向 KeyPool：
 export OPENAI_BASE_URL=http://127.0.0.1:9200/v1
 ```
+
+> **智能配置检测**：KeyPool 启动时会自动查找 `~/.openclaw/openclaw.json`，
+> 从中提取所有 provider 的 API Key 和模型信息，无需手动配置。
+> 如果需要手动指定 key，编辑 `config.json` 即可覆盖。
 
 ## 工作原理
 
@@ -41,20 +41,23 @@ Key1 Key2 Key3 KeyN
 
 - **零依赖** — 纯 Node.js，无需 npm install
 - **OpenAI 兼容** — 无缝替换，你的应用无需改动
+- **自动配置检测** — 启动时自动读取 `~/.openclaw/openclaw.json`，提取所有 provider 的 key 和模型
 - **智能轮转** — Round-robin 分发请求到不同 key
 - **故障转移** — 429/401/403 自动切换到下一个可用 key
 - **自动恢复** — 被禁用的 key 定期重试恢复
 - **流式支持** — 完整 SSE streaming 透传
 - **用量追踪** — 每个 key 的请求数、token 用量统计
+- **多 provider 支持** — 不同 key 可指向不同的上游 API（如 OpenAI + MiMo）
 
 ### 支持的端点
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/v1/chat/completions` | POST | Chat Completions API |
-| `/v1/models` | GET | 列出可用模型 |
+| `/v1/models` | GET | 列出可用模型（优先返回本地配置） |
 | `/v1/embeddings` | POST | Embeddings API |
 | `/pool/stats` | GET | 查看各 key 用量统计 |
+| `/pool/models` | GET | 查看所有已知模型详情 |
 | `/health` | GET | 健康检查 |
 
 ## 配置

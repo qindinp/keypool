@@ -16,21 +16,160 @@
 
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ─── Config ───────────────────────────────────────────────────────────
 const CONFIG_PATH = resolve(__dirname, "config.json");
 
+/** 尝试从 JSONC / JS 对象字面量中提取配置（去掉注释、处理单引号等） */
+function parseJsonLike(text) {
+  // 去掉单行和多行注释
+  let cleaned = text
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  // 处理尾逗号
+  cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
+  // 处理无引号的 key
+  cleaned = cleaned.replace(/(\s)(\w+)\s*:/g, '$1"$2":');
+  // 处理单引号字符串
+  cleaned = cleaned.replace(/'([^']*)'/g, '"$1"');
+  return JSON.parse(cleaned);
+}
+
+/** 读取 OpenClaw 配置文件 */
+function readOpenClawConfig() {
+  const candidates = [
+    // 标准路径
+    join(homedir(), ".openclaw", "openclaw.json"),
+    // 环境变量指定的路径
+    process.env.OPENCLAW_CONFIG && resolve(process.env.OPENCLAW_CONFIG),
+    // XDG 路径
+    process.env.XDG_CONFIG_HOME && join(process.env.XDG_CONFIG_HOME, "openclaw", "openclaw.json"),
+  ].filter(Boolean);
+
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try {
+        const raw = readFileSync(p, "utf-8");
+        let parsed;
+        // 先尝试标准 JSON
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          // 回退到 JSONC 解析
+          parsed = parseJsonLike(raw);
+        }
+        // 解析环境变量引用
+        parsed = resolveEnvVars(parsed);
+        return { config: parsed, path: p };
+      } catch (e) {
+        console.warn(`⚠️  无法解析 OpenClaw 配置: ${p} (${e.message})`);
+      }
+    }
+  }
+  return null;
+}
+
+/** 解析环境变量引用 ${VAR_NAME} */
+function resolveEnvVars(obj) {
+  if (typeof obj === "string") {
+    return obj.replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] || "");
+  }
+  if (Array.isArray(obj)) return obj.map(resolveEnvVars);
+  if (obj && typeof obj === "object") {
+    const result = {};
+    for (const [k, v] of Object.entries(obj)) {
+      result[k] = resolveEnvVars(v);
+    }
+    return result;
+  }
+  return obj;
+}
+
+/** 从 OpenClaw 配置中提取 provider 信息 */
+function extractProviders(ocConfig) {
+  const providers = ocConfig?.models?.providers;
+  if (!providers || typeof providers !== "object") return [];
+
+  const result = [];
+  for (const [name, prov] of Object.entries(providers)) {
+    if (!prov.apiKey) continue;
+    result.push({
+      name,
+      baseUrl: prov.baseUrl || "https://api.openai.com/v1",
+      apiKey: prov.apiKey,
+      models: (prov.models || []).map((m) => ({
+        id: `${name}/${m.id}`,
+        name: m.name || m.id,
+        reasoning: m.reasoning || false,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+      })),
+    });
+  }
+  return result;
+}
+
 function loadConfig() {
-  if (!existsSync(CONFIG_PATH)) {
-    console.error("❌ config.json not found. Copy config.example.json and add your keys.");
+  // 1. 尝试读取本地 config.json
+  let localConfig = {};
+  if (existsSync(CONFIG_PATH)) {
+    try {
+      localConfig = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+    } catch (e) {
+      console.warn(`⚠️  config.json 解析失败: ${e.message}`);
+    }
+  }
+
+  // 2. 尝试自动读取 OpenClaw 配置
+  const oc = readOpenClawConfig();
+  if (oc) {
+    console.log(`🔗 检测到 OpenClaw 配置: ${oc.path}`);
+    const providers = extractProviders(oc.config);
+    if (providers.length > 0) {
+      console.log(`📦 发现 ${providers.length} 个 provider:`);
+      for (const p of providers) {
+        console.log(`   • ${p.name} → ${p.baseUrl} (${p.models.length} 模型)`);
+      }
+
+      // 将 OpenClaw provider 合并为 key 池
+      if (!localConfig.keys || localConfig.keys.length === 0) {
+        localConfig.keys = [];
+        for (const p of providers) {
+          localConfig.keys.push({
+            id: p.name,
+            key: p.apiKey,
+            _baseUrl: p.baseUrl,  // 每个 key 可以有独立的 baseUrl
+          });
+        }
+        // 如果未指定 baseUrl，使用第一个 provider 的
+        if (!localConfig.baseUrl) {
+          localConfig.baseUrl = providers[0].baseUrl;
+        }
+        // 如果未指定 models，汇总所有 provider 的模型
+        if (!localConfig.models) {
+          localConfig.models = providers.flatMap((p) => p.models);
+        }
+      }
+    }
+  } else {
+    console.log("ℹ️  未检测到 OpenClaw 配置，使用本地 config.json");
+  }
+
+  // 3. 验证最终配置
+  if (!localConfig.keys || localConfig.keys.length === 0) {
+    console.error("❌ 没有可用的 API Key。请：");
+    console.error("   方式一：配置 OpenClaw（运行 openclaw onboard）");
+    console.error("   方式二：编辑 config.json 手动添加 keys");
     process.exit(1);
   }
-  return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+
+  return localConfig;
 }
 
 const config = loadConfig();
@@ -39,6 +178,7 @@ const BASE_URL = config.baseUrl || "https://api.openai.com";
 const LOG_LEVEL = config.logLevel || "info";
 const HEALTH_CHECK_INTERVAL = config.healthCheckIntervalMs || 5 * 60 * 1000; // 5 min
 const KEY_RETRY_DELAY = config.keyRetryDelayMs || 60 * 1000; // 1 min
+const AVAILABLE_MODELS = config.models || []; // 可用模型列表
 
 const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLogLevel = LOG_LEVELS[LOG_LEVEL] ?? 1;
@@ -57,6 +197,7 @@ class KeyPool {
     this.keys = keyConfigs.map((kc, i) => ({
       id: kc.id || `key-${i + 1}`,
       key: kc.key,
+      baseUrl: kc._baseUrl || null, // 每个 key 可以有独立的上游地址
       enabled: true,
       errorCount: 0,
       lastError: null,
@@ -134,21 +275,33 @@ const pool = new KeyPool(config.keys || []);
 setInterval(() => pool.recoverKeys(), HEALTH_CHECK_INTERVAL);
 
 // ─── Proxy Helpers ────────────────────────────────────────────────────
-const parsedBase = new URL(BASE_URL);
-const isHttps = parsedBase.protocol === "https:";
-const requester = isHttps ? httpsRequest : httpRequest;
+const defaultBase = new URL(BASE_URL);
+
+function getTargetFor(keyEntry) {
+  // 优先使用 key 自身的 baseUrl，否则用全局默认
+  const base = keyEntry.baseUrl || BASE_URL;
+  const parsed = new URL(base);
+  return {
+    hostname: parsed.hostname,
+    port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
+    isHttps: parsed.protocol === "https:",
+  };
+}
 
 function proxyRequest(keyEntry, req, res) {
   const targetPath = req.url; // e.g. /v1/chat/completions
   const headers = { ...req.headers };
+  const target = getTargetFor(keyEntry);
 
   // Replace auth header with the selected key
   delete headers["host"];
   headers["authorization"] = `Bearer ${keyEntry.key}`;
 
+  const requester = target.isHttps ? httpsRequest : httpRequest;
+
   const opts = {
-    hostname: parsedBase.hostname,
-    port: parsedBase.port || (isHttps ? 443 : 80),
+    hostname: target.hostname,
+    port: target.port,
     path: targetPath,
     method: req.method,
     headers,
@@ -265,6 +418,12 @@ function handleRequest(req, res) {
     return res.end(JSON.stringify({ keys: stats }, null, 2));
   }
 
+  // ── Pool models ──
+  if (path === "/pool/models" && req.method === "GET") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ models: AVAILABLE_MODELS, sources: pool.keys.map((k) => ({ id: k.id, baseUrl: k.baseUrl || BASE_URL })) }, null, 2));
+  }
+
   // ── Health ──
   if (path === "/health") {
     const enabled = pool.keys.filter((k) => k.enabled).length;
@@ -272,8 +431,27 @@ function handleRequest(req, res) {
     return res.end(JSON.stringify({ status: "ok", enabledKeys: enabled, totalKeys: pool.keys.length }));
   }
 
-  // ── Proxy to OpenAI ──
-  const proxyPaths = ["/v1/", "/v1/models", "/v1/chat/completions", "/v1/embeddings", "/v1/audio"];
+  // ── /v1/models — 优先返回本地已知模型列表 ──
+  if (path === "/v1/models" && req.method === "GET") {
+    if (AVAILABLE_MODELS.length > 0) {
+      const models = AVAILABLE_MODELS.map((m) => ({
+        id: m.id,
+        object: "model",
+        created: Math.floor(Date.now() / 1000),
+        owned_by: m.id.split("/")[0] || "keypool",
+        name: m.name,
+        reasoning: m.reasoning || false,
+        context_window: m.contextWindow,
+        max_tokens: m.maxTokens,
+      }));
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ object: "list", data: models }, null, 2));
+    }
+    // 没有本地模型信息，走代理
+  }
+
+  // ── Proxy to upstream ──
+  const proxyPaths = ["/v1/"];
   if (proxyPaths.some((p) => path.startsWith(p))) {
     const keyEntry = pool.pick();
     if (!keyEntry) {
@@ -290,15 +468,18 @@ function handleRequest(req, res) {
     JSON.stringify(
       {
         name: "KeyPool",
-        version: "0.1.0",
+        version: "0.2.0",
         description: "OpenAI API Key Pool Proxy",
         endpoints: {
           "POST /v1/chat/completions": "Chat completions (OpenAI compatible)",
           "GET  /v1/models": "List models",
           "POST /v1/embeddings": "Embeddings",
           "GET  /pool/stats": "Key pool usage stats",
+          "GET  /pool/models": "List all known models with details",
           "GET  /health": "Health check",
         },
+        keys: pool.keys.length,
+        models: AVAILABLE_MODELS.length,
         usage: `Set OPENAI_BASE_URL to http://127.0.0.1:${PORT}/v1`,
       },
       null,
@@ -314,6 +495,12 @@ server.listen(PORT, () => {
   log("info", `🚀 KeyPool running on http://127.0.0.1:${PORT}`);
   log("info", `   Proxying to ${BASE_URL}`);
   log("info", `   ${pool.keys.length} key(s) loaded`);
+  if (AVAILABLE_MODELS.length > 0) {
+    log("info", `   ${AVAILABLE_MODELS.length} model(s) available:`);
+    for (const m of AVAILABLE_MODELS) {
+      log("info", `     • ${m.id}${m.reasoning ? " 🧠" : ""}`);
+    }
+  }
   log("info", `   Set OPENAI_BASE_URL=http://127.0.0.1:${PORT}/v1 to use`);
   log("info", `   GET /pool/stats for usage, GET /health for status`);
 });
