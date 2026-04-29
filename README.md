@@ -74,6 +74,9 @@ Key1 Key2 Key3 KeyN
 }
 ```
 
+> **兼容任意 OpenAI API 兼容服务**，只需修改 `baseUrl`。
+> 例如小米 MiMo：`"baseUrl": "https://api-oc.xiaomimimo.com/v1"`
+
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
 | `port` | 9200 | 代理监听端口 |
@@ -105,9 +108,17 @@ Key1 Key2 Key3 KeyN
 ```python
 from openai import OpenAI
 
+# OpenAI
 client = OpenAI(base_url="http://127.0.0.1:9200/v1")
 resp = client.chat.completions.create(
     model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+# 小米 MiMo
+client = OpenAI(base_url="http://127.0.0.1:9200/v1")
+resp = client.chat.completions.create(
+    model="mimo-v2.5-pro",
     messages=[{"role": "user", "content": "Hello!"}]
 )
 print(resp.choices[0].message.content)
