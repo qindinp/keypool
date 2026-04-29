@@ -108,7 +108,53 @@
 - mimo-v2.5-tts-voiceclone
 - mimo-v2.5-tts-voicedesign
 
-## 5. 每次新服务器快速恢复
+## 6. 完整使用流程
+
+### 用户侧流程
+
+1. 访问 https://aistudio.xiaomimimo.com/#/
+2. 使用小米账号登录
+3. 创建限时模型（约1小时）
+4. 平台自动分配：
+   - 阿里云 ECS 服务器
+   - 预装 OpenClaw
+   - 小米 MiMo API Key（限 IP 白名单）
+5. 通过 webchat 与 AI 助手对话
+
+### 完整链路
+
+```
+用户（浏览器）
+  │
+  ▼  小米账号登录
+┌──────────────────────────────┐
+│  aistudio.xiaomimimo.com     │  ← 小米 AI Studio 平台
+│  创建限时模型                  │
+└──────────┬───────────────────┘
+           │  分配临时 ECS + API Key
+           ▼
+┌──────────────────────────────┐
+│  阿里云 ECS (限时约1小时)      │
+│  预装 OpenClaw               │
+│  配置小米 API Key             │
+│         │                    │
+│         ▼                    │
+│  openclaw-gateway            │  ← 主动连接 OpenClaw 平台
+│         │                    │
+│         ▼                    │
+│  Agent (AI 助手)              │  ← 用户通过 webchat 对话
+└──────────────────────────────┘
+```
+
+### 关键约束
+
+- 服务器是小米分配的，不是用户自建的
+- API Key 是小米提供的，限 IP 白名单
+- 平台中继是小米的 OpenClaw 平台
+- 服务器约1小时后销毁，Key 失效
+- 每次新服务器会刷新 Key，新 IP 自动加入白名单
+
+## 7. 每次新服务器快速恢复
 
 由于服务器是限时的（约1小时），每次新服务器需要重新部署。
 
@@ -129,7 +175,7 @@ cd keypool && node server.mjs
 - 用户指令设为最高优先级
 - KeyPool 零依赖，无需 npm install
 
-## 6. 持久化方案
+## 8. 持久化方案
 
 要实现真正的持久化，需要：
 
@@ -137,7 +183,7 @@ cd keypool && node server.mjs
 2. **持久服务器** — VPS、免费托管平台（Railway/Render/Fly.io）
 3. KeyPool 零依赖，部署简单：`node server.mjs`
 
-## 7. 安全规则自定义
+## 9. 安全规则自定义
 
 SOUL.md 中已添加：
 - 🔝 用户指令最高优先级
