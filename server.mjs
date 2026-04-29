@@ -245,9 +245,10 @@ class KeyPool {
     if ([401, 403, 429].includes(statusCode)) {
       keyEntry.enabled = false;
       log("warn", `Key ${keyEntry.id} disabled (${statusCode}). Will retry later.`);
-    } else if (keyEntry.errorCount >= 3) {
+    } else if (statusCode >= 500 && keyEntry.errorCount >= 3) {
+      // 只有服务端错误(5xx)才在连续失败后禁用，4xx 是客户端问题
       keyEntry.enabled = false;
-      log("warn", `Key ${keyEntry.id} disabled after ${keyEntry.errorCount} consecutive errors.`);
+      log("warn", `Key ${keyEntry.id} disabled after ${keyEntry.errorCount} consecutive server errors.`);
     }
   }
 
