@@ -126,39 +126,50 @@ function loadConfig() {
     }
   }
 
-  // 2. 尝试自动读取 OpenClaw 配置
-  const oc = readOpenClawConfig();
-  if (oc) {
-    console.log(`🔗 检测到 OpenClaw 配置: ${oc.path}`);
-    const providers = extractProviders(oc.config);
-    if (providers.length > 0) {
-      console.log(`📦 发现 ${providers.length} 个 provider:`);
-      for (const p of providers) {
-        console.log(`   • ${p.name} → ${p.baseUrl} (${p.models.length} 模型)`);
-      }
+  // 2. 如果本地没有 keys，尝试自动读取 OpenClaw 配置并生成 config.json
+  if (!localConfig.keys || localConfig.keys.length === 0) {
+    const oc = readOpenClawConfig();
+    if (oc) {
+      console.log(`🔗 检测到 OpenClaw 配置: ${oc.path}`);
+      const providers = extractProviders(oc.config);
+      if (providers.length > 0) {
+        console.log(`📦 发现 ${providers.length} 个 provider:`);
+        for (const p of providers) {
+          console.log(`   • ${p.name} → ${p.baseUrl} (${p.models.length} 模型)`);
+        }
 
-      // 将 OpenClaw provider 合并为 key 池
-      if (!localConfig.keys || localConfig.keys.length === 0) {
+        // 构建 config
         localConfig.keys = [];
         for (const p of providers) {
           localConfig.keys.push({
             id: p.name,
             key: p.apiKey,
-            _baseUrl: p.baseUrl,  // 每个 key 可以有独立的 baseUrl
+            baseUrl: p.baseUrl,
           });
         }
-        // 如果未指定 baseUrl，使用第一个 provider 的
-        if (!localConfig.baseUrl) {
-          localConfig.baseUrl = providers[0].baseUrl;
-        }
-        // 如果未指定 models，汇总所有 provider 的模型
-        if (!localConfig.models) {
-          localConfig.models = providers.flatMap((p) => p.models);
+        localConfig.baseUrl = providers[0].baseUrl;
+        localConfig.models = providers.flatMap((p) => p.models);
+
+        // 自动生成 config.json
+        try {
+          const out = {
+            port: localConfig.port || 9200,
+            baseUrl: localConfig.baseUrl,
+            logLevel: localConfig.logLevel || "info",
+            healthCheckIntervalMs: localConfig.healthCheckIntervalMs || 300000,
+            keyRetryDelayMs: localConfig.keyRetryDelayMs || 60000,
+            keys: localConfig.keys.map((k) => ({ id: k.id, key: k.key, baseUrl: k.baseUrl })),
+            models: localConfig.models,
+          };
+          writeFileSync(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n", "utf-8");
+          console.log(`✅ 已生成 config.json → ${CONFIG_PATH}`);
+        } catch (e) {
+          console.warn(`⚠️  无法写入 config.json: ${e.message}`);
         }
       }
+    } else {
+      console.log("ℹ️  未检测到 OpenClaw 配置");
     }
-  } else {
-    console.log("ℹ️  未检测到 OpenClaw 配置，使用本地 config.json");
   }
 
   // 3. 验证最终配置
