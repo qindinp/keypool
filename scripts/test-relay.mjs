@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -9,7 +9,8 @@ const rootDir = resolve(new URL('..', import.meta.url).pathname.replace(/^\//, p
 const relayEntry = join(rootDir, 'relay', 'server.mjs');
 const tempRoot = join(tmpdir(), `keypool-relay-test-${Date.now()}`);
 const registryPath = join(tempRoot, 'registry.json');
-const upstreamPort = 19510;
+const primaryPort = 19510;
+const fallbackPort = 19512;
 const relayPort = 19511;
 
 function sleep(ms) {
@@ -40,30 +41,65 @@ function writeRegistry(upstreams) {
   }, null, 2) + '\n', 'utf-8');
 }
 
-function startFakeUpstream() {
+function readRegistry() {
+  return JSON.parse(readFileSync(registryPath, 'utf-8'));
+}
+
+function upstreamRecord({ accountId, port, priority = 1, healthy = true }) {
+  return {
+    accountId,
+    accountName: accountId,
+    baseUrl: `http://127.0.0.1:${port}`,
+    localUrl: `http://127.0.0.1:${port}`,
+    shareUrl: null,
+    healthy,
+    priority,
+    inflight: 0,
+    lastOkAt: Date.now(),
+    failureCount: 0,
+    cooldownUntil: null,
+    deployCount: 0,
+    instanceStatus: healthy ? 'AVAILABLE' : 'DESTROYED',
+  };
+}
+
+function startFakeUpstream(port, behavior) {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     if (url.pathname === '/health') {
+      if (behavior.healthStatus && behavior.healthStatus !== 200) {
+        res.writeHead(behavior.healthStatus, { 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ ok: false, error: 'health-failed' }));
+      }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ ok: true }));
+      return res.end(JSON.stringify({ ok: true, upstream: behavior.name }));
     }
 
     if (url.pathname === '/v1/models') {
+      if (behavior.modelsStatus && behavior.modelsStatus >= 500) {
+        res.writeHead(behavior.modelsStatus, { 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: `${behavior.name}-models-failed` }));
+      }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ object: 'list', data: [{ id: 'fake-model' }] }));
+      return res.end(JSON.stringify({ object: 'list', data: [{ id: `${behavior.name}-model` }] }));
     }
 
     if (url.pathname === '/v1/embeddings') {
       let body = '';
       for await (const chunk of req) body += chunk;
       const parsed = JSON.parse(body || '{}');
+      if (behavior.embeddingsStatus && behavior.embeddingsStatus >= 500) {
+        res.writeHead(behavior.embeddingsStatus, { 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: `${behavior.name}-embeddings-failed` }));
+      }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({
         object: 'list',
         data: [{ object: 'embedding', index: 0, embedding: [0.1, 0.2, 0.3] }],
-        model: parsed.model || 'fake-embed-model',
+        model: parsed.model || `${behavior.name}-embed-model`,
         usage: { prompt_tokens: 3, total_tokens: 3 },
+        upstream: behavior.name,
       }));
     }
 
@@ -73,24 +109,33 @@ function startFakeUpstream() {
       const parsed = JSON.parse(body || '{}');
 
       if (parsed.stream) {
+        if (behavior.streamStatus && behavior.streamStatus >= 500) {
+          res.writeHead(behavior.streamStatus, { 'content-type': 'application/json; charset=utf-8' });
+          return res.end(JSON.stringify({ error: `${behavior.name}-stream-failed` }));
+        }
         res.writeHead(200, {
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-cache',
           connection: 'keep-alive',
+          'x-accel-buffering': 'no',
         });
-        res.write('data: {"id":"chatcmpl-stream-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"你"}}]}\n\n');
-        await sleep(30);
-        res.write('data: {"id":"chatcmpl-stream-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"好"}}]}\n\n');
+        res.write(`data: {"id":"chatcmpl-stream-${behavior.name}","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"${behavior.name}"}}]}\n\n`);
         await sleep(30);
         return res.end('data: [DONE]\n\n');
       }
 
+      if (behavior.chatStatus && behavior.chatStatus >= 500) {
+        res.writeHead(behavior.chatStatus, { 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: `${behavior.name}-chat-failed` }));
+      }
+
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({
-        id: 'chatcmpl-1',
+        id: `chatcmpl-${behavior.name}`,
         object: 'chat.completion',
-        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' } }],
-        model: parsed.model || 'fake-chat-model',
+        choices: [{ index: 0, message: { role: 'assistant', content: `${behavior.name}-ok` } }],
+        model: parsed.model || `${behavior.name}-chat-model`,
+        upstream: behavior.name,
       }));
     }
 
@@ -100,7 +145,7 @@ function startFakeUpstream() {
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(upstreamPort, '127.0.0.1', () => resolve(server));
+    server.listen(port, '127.0.0.1', () => resolve(server));
   });
 }
 
@@ -112,7 +157,7 @@ function startRelay() {
       RELAY_HOST: '127.0.0.1',
       RELAY_PORT: String(relayPort),
       RELAY_REGISTRY_PATH: registryPath,
-      RELAY_MAX_ATTEMPTS: '2',
+      RELAY_MAX_ATTEMPTS: '3',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -134,16 +179,19 @@ async function testNoHealthyUpstream() {
   assert(modelRes.status === 503, `expected /v1/models 503, got ${modelRes.status}`);
 }
 
+async function testAdminPage() {
+  writeRegistry([upstreamRecord({ accountId: 'primary', port: primaryPort, priority: 1 })]);
+  const res = await fetch(`http://127.0.0.1:${relayPort}/admin`);
+  assert(res.status === 200, `expected /admin 200, got ${res.status}`);
+  const html = await res.text();
+  assert(html.includes('KeyPool Relay 管理界面'), 'admin page missing title');
+  assert(html.includes('/registry'), 'admin page should reference /registry');
+}
+
 async function testJsonRoutes() {
-  writeRegistry([{
-    accountId: 'test-account',
-    baseUrl: `http://127.0.0.1:${upstreamPort}`,
-    localUrl: `http://127.0.0.1:${upstreamPort}`,
-    healthy: true,
-    priority: 1,
-    inflight: 0,
-    lastOkAt: Date.now(),
-  }]);
+  writeRegistry([
+    upstreamRecord({ accountId: 'primary', port: primaryPort, priority: 1 }),
+  ]);
 
   const healthRes = await fetch(`http://127.0.0.1:${relayPort}/health`);
   assert(healthRes.status === 200, `expected /health 200, got ${healthRes.status}`);
@@ -151,7 +199,7 @@ async function testJsonRoutes() {
   const modelsRes = await fetch(`http://127.0.0.1:${relayPort}/v1/models`);
   assert(modelsRes.status === 200, `expected /v1/models 200, got ${modelsRes.status}`);
   const models = await modelsRes.json();
-  assert(models?.data?.[0]?.id === 'fake-model', 'unexpected models payload');
+  assert(models?.data?.[0]?.id === 'primary-model', 'unexpected models payload');
 
   const embeddingsRes = await fetch(`http://127.0.0.1:${relayPort}/v1/embeddings`, {
     method: 'POST',
@@ -161,6 +209,7 @@ async function testJsonRoutes() {
   assert(embeddingsRes.status === 200, `expected /v1/embeddings 200, got ${embeddingsRes.status}`);
   const embeddings = await embeddingsRes.json();
   assert(Array.isArray(embeddings?.data?.[0]?.embedding), 'unexpected embeddings payload');
+  assert(embeddings?.upstream === 'primary', 'embeddings should come from primary');
 
   const chatRes = await fetch(`http://127.0.0.1:${relayPort}/v1/chat/completions`, {
     method: 'POST',
@@ -169,10 +218,14 @@ async function testJsonRoutes() {
   });
   assert(chatRes.status === 200, `expected /v1/chat/completions 200, got ${chatRes.status}`);
   const chat = await chatRes.json();
-  assert(chat?.choices?.[0]?.message?.content === 'ok', 'unexpected chat payload');
+  assert(chat?.choices?.[0]?.message?.content === 'primary-ok', 'unexpected chat payload');
 }
 
 async function testStreamRoute() {
+  writeRegistry([
+    upstreamRecord({ accountId: 'primary', port: primaryPort, priority: 1 }),
+  ]);
+
   const res = await fetch(`http://127.0.0.1:${relayPort}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -181,23 +234,90 @@ async function testStreamRoute() {
 
   assert(res.status === 200, `expected stream status 200, got ${res.status}`);
   const text = await res.text();
-  assert(text.includes('data: {'), 'stream output missing data frame');
+  assert(text.includes('primary'), 'stream output should come from primary');
   assert(text.includes('data: [DONE]'), 'stream output missing done frame');
+}
+
+async function testFailoverToFallback() {
+  writeRegistry([
+    upstreamRecord({ accountId: 'primary', port: primaryPort, priority: 1 }),
+    upstreamRecord({ accountId: 'fallback', port: fallbackPort, priority: 2 }),
+  ]);
+
+  const res = await fetch(`http://127.0.0.1:${relayPort}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'chat-test', messages: [{ role: 'user', content: 'please failover' }] }),
+  });
+
+  assert(res.status === 200, `expected failover chat status 200, got ${res.status}`);
+  const body = await res.json();
+  assert(body?.upstream === 'fallback', 'chat should be served by fallback upstream');
+
+  const registry = readRegistry();
+  const primary = registry.upstreams.find(u => u.accountId === 'primary');
+  const fallback = registry.upstreams.find(u => u.accountId === 'fallback');
+  assert(primary, 'primary upstream missing from registry');
+  assert(fallback, 'fallback upstream missing from registry');
+  assert(primary.failureCount >= 1, 'primary failureCount should increase after failover');
+  assert(Boolean(primary.cooldownUntil), 'primary cooldownUntil should be set after failover');
+  assert(primary.lastStatusCode === 500, 'primary lastStatusCode should record 500');
+  assert(fallback.lastError == null, 'fallback should not carry lastError after success');
+}
+
+async function testAllUpstreamsFailed() {
+  writeRegistry([
+    upstreamRecord({ accountId: 'primary', port: primaryPort, priority: 1 }),
+    upstreamRecord({ accountId: 'fallback', port: fallbackPort, priority: 2 }),
+  ]);
+
+  const res = await fetch(`http://127.0.0.1:${relayPort}/v1/models`);
+  assert(res.status === 502, `expected all failed status 502, got ${res.status}`);
+  const body = await res.json();
+  assert(body?.error === 'all_upstreams_failed', 'expected all_upstreams_failed error');
+  assert(Array.isArray(body?.attempts) && body.attempts.length >= 2, 'expected attempts for both upstreams');
+
+  const registry = readRegistry();
+  const primary = registry.upstreams.find(u => u.accountId === 'primary');
+  const fallback = registry.upstreams.find(u => u.accountId === 'fallback');
+  assert(primary?.failureCount >= 1, 'primary should record failure');
+  assert(fallback?.failureCount >= 1, 'fallback should record failure');
 }
 
 async function main() {
   mkdirSync(tempRoot, { recursive: true });
-  let upstream;
+  let primary;
+  let fallback;
   let relay;
 
   try {
-    upstream = await startFakeUpstream();
+    primary = await startFakeUpstream(primaryPort, {
+      name: 'primary',
+    });
+    fallback = await startFakeUpstream(fallbackPort, {
+      name: 'fallback',
+      modelsStatus: 500,
+      chatStatus: 200,
+    });
     relay = startRelay();
     await waitFor(`http://127.0.0.1:${relayPort}/registry`);
 
     await testNoHealthyUpstream();
+    await testAdminPage();
     await testJsonRoutes();
     await testStreamRoute();
+
+    await new Promise(resolve => primary.close(resolve));
+    primary = await startFakeUpstream(primaryPort, {
+      name: 'primary',
+      chatStatus: 500,
+      modelsStatus: 500,
+      embeddingsStatus: 500,
+      streamStatus: 500,
+    });
+
+    await testFailoverToFallback();
+    await testAllUpstreamsFailed();
 
     console.log('OK relay integration tests passed');
   } catch (error) {
@@ -212,8 +332,11 @@ async function main() {
       relay.child.kill();
       await sleep(150);
     }
-    if (upstream) {
-      await new Promise(resolve => upstream.close(resolve));
+    if (primary) {
+      await new Promise(resolve => primary.close(resolve));
+    }
+    if (fallback) {
+      await new Promise(resolve => fallback.close(resolve));
     }
     rmSync(tempRoot, { recursive: true, force: true });
   }

@@ -2,6 +2,7 @@
 import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync, existsSync } from 'node:fs';
 import { createRegistry } from '../controller/registry.mjs';
 import { pickUpstream, listFallbackUpstreams } from './router.mjs';
 import { proxyJson, proxyStream } from './proxy.mjs';
@@ -14,6 +15,7 @@ const registryPath = process.env.RELAY_REGISTRY_PATH
   : resolve(__dirname, '..', '.manager', 'registry.json');
 const registry = createRegistry(registryPath);
 const MAX_ATTEMPTS = parseInt(process.env.RELAY_MAX_ATTEMPTS || '3', 10);
+const adminHtmlPath = resolve(__dirname, 'admin.html');
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2) + '\n';
@@ -22,6 +24,22 @@ function sendJson(res, statusCode, payload) {
     'content-length': Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+function sendHtml(res, statusCode, html) {
+  res.writeHead(statusCode, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': Buffer.byteLength(html),
+    'cache-control': 'no-cache',
+  });
+  res.end(html);
+}
+
+function loadAdminHtml() {
+  if (existsSync(adminHtmlPath)) {
+    return readFileSync(adminHtmlPath, 'utf-8');
+  }
+  return `<!doctype html><meta charset="utf-8"><title>KeyPool Relay Admin</title><body><h1>admin.html missing</h1></body>`;
 }
 
 function readBody(req) {
@@ -260,6 +278,10 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
+    if (url.pathname === '/' || url.pathname === '/admin') {
+      return sendHtml(res, 200, loadAdminHtml());
+    }
+
     if (url.pathname === '/health') {
       const data = registry.load();
       const healthy = (data.upstreams || []).filter(u => u.healthy).length;
@@ -285,7 +307,7 @@ const server = createServer(async (req, res) => {
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: /health /registry /v1/models /v1/embeddings /v1/chat/completions',
+      message: '支持的路径: / /admin /health /registry /v1/models /v1/embeddings /v1/chat/completions',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });

@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KeyPool Relay Admin</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a31;
+      --panel-2: #192444;
+      --text: #e9eefc;
+      --muted: #93a1c6;
+      --ok: #25c281;
+      --warn: #f5b942;
+      --bad: #ff6b6b;
+      --line: #2a365f;
+      --chip: #233158;
+      --shadow: 0 16px 40px rgba(0, 0, 0, .25);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(180deg, #09101f 0%, #0f1730 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .sub { color: var(--muted); }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    button, select {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.08); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 14px 0 22px;
+    }
+    .card {
+      background: rgba(18, 26, 49, .96);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .metric-label { color: var(--muted); font-size: 12px; }
+    .metric-value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 18px 0 10px;
+    }
+    .section-title h2 { margin: 0; font-size: 18px; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.03);
+      color: var(--muted);
+    }
+    .dot { width: 10px; height: 10px; border-radius: 999px; background: var(--muted); }
+    .dot.ok { background: var(--ok); }
+    .dot.warn { background: var(--warn); }
+    .dot.bad { background: var(--bad); }
+    .list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 14px;
+    }
+    .upstream-card {
+      background: rgba(18, 26, 49, .96);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .name { font-size: 18px; font-weight: 700; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+    .chip {
+      background: var(--chip);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px 10px;
+      font-size: 13px;
+      margin-top: 10px;
+    }
+    .kv .k { color: var(--muted); }
+    .kv .v { word-break: break-all; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .error-box {
+      white-space: pre-wrap;
+      background: rgba(255, 107, 107, .08);
+      border: 1px solid rgba(255, 107, 107, .25);
+      border-radius: 12px;
+      padding: 12px;
+      color: #ffd1d1;
+    }
+    .footer { color: var(--muted); margin-top: 18px; font-size: 12px; }
+    a { color: #8fc6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .hero { flex-direction: column; }
+      .toolbar { justify-content: flex-start; }
+    }
+    @media (max-width: 600px) {
+      .grid { grid-template-columns: 1fr; }
+      .list { grid-template-columns: 1fr; }
+      .kv { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <h1>KeyPool Relay 管理界面</h1>
+        <div class="sub">真实读取 relay 当前 registry，展示上游状态、健康度、冷却、错误与访问入口。</div>
+      </div>
+      <div class="toolbar">
+        <label class="status"><span class="dot" id="autoDot"></span><span>自动刷新</span></label>
+        <select id="refreshMs">
+          <option value="0">关闭自动刷新</option>
+          <option value="5000">5 秒</option>
+          <option value="10000" selected>10 秒</option>
+          <option value="30000">30 秒</option>
+          <option value="60000">60 秒</option>
+        </select>
+        <button id="refreshBtn">立即刷新</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="metric-label">可用上游</div>
+        <div class="metric-value" id="healthyCount">-</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">总上游数</div>
+        <div class="metric-value" id="totalCount">-</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">当前主路由</div>
+        <div class="metric-value" id="primaryName" style="font-size:22px">-</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">上次同步</div>
+        <div class="metric-value" id="updatedAt" style="font-size:18px">-</div>
+      </div>
+    </div>
+
+    <div class="section-title">
+      <h2>Relay 概览</h2>
+      <div class="status"><span class="dot" id="relayDot"></span><span id="relayText">检查中...</span></div>
+    </div>
+    <div class="card">
+      <div class="kv">
+        <div class="k">健康接口</div><div class="v mono"><a href="/health" target="_blank">/health</a></div>
+        <div class="k">Registry</div><div class="v mono"><a href="/registry" target="_blank">/registry</a></div>
+        <div class="k">Models</div><div class="v mono"><a href="/v1/models" target="_blank">/v1/models</a></div>
+        <div class="k">管理页</div><div class="v mono"><a href="/admin" target="_blank">/admin</a></div>
+      </div>
+    </div>
+
+    <div class="section-title">
+      <h2>上游实例</h2>
+      <div class="sub" id="listMeta">-</div>
+    </div>
+    <div id="errorBox" class="error-box" style="display:none"></div>
+    <div id="upstreamList" class="list"></div>
+
+    <div class="footer">
+      提示：本页只读，不直接改 manager / registry。若没有健康上游，请先运行 manager 同步并完成部署。
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      timer: null,
+      intervalMs: 10000,
+    };
+
+    function fmtTime(value) {
+      if (!value) return '-';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return String(value);
+      return d.toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function fmtRelative(value) {
+      if (!value) return '-';
+      const time = new Date(value).getTime();
+      if (!Number.isFinite(time)) return '-';
+      const diff = time - Date.now();
+      const abs = Math.abs(diff);
+      const mins = Math.round(abs / 60000);
+      if (mins < 1) return diff >= 0 ? '即将' : '刚刚';
+      if (mins < 60) return diff >= 0 ? `${mins} 分钟后` : `${mins} 分钟前`;
+      const hours = Math.round(mins / 60);
+      if (hours < 48) return diff >= 0 ? `${hours} 小时后` : `${hours} 小时前`;
+      const days = Math.round(hours / 24);
+      return diff >= 0 ? `${days} 天后` : `${days} 天前`;
+    }
+
+    function statusBadge(ok, warnText, badText) {
+      if (ok === true) return { cls: 'ok', text: '健康' };
+      if (warnText) return { cls: 'warn', text: warnText };
+      return { cls: 'bad', text: badText || '异常' };
+    }
+
+    function escapeHtml(text) {
+      return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderUpstreamCard(u) {
+      const badge = statusBadge(u.healthy, u.instanceStatus === 'AVAILABLE' ? '待健康检查' : null, u.instanceStatus || '异常');
+      const cooldown = u.cooldownUntil ? `${fmtTime(u.cooldownUntil)}（${fmtRelative(u.cooldownUntil)}）` : '-';
+      const expire = u.expireTime ? `${fmtTime(u.expireTime)}（${fmtRelative(u.expireTime)}）` : '-';
+      const lastDeploy = u.lastDeployAt ? `${fmtTime(u.lastDeployAt)}（${fmtRelative(u.lastDeployAt)}）` : '-';
+      const tags = Array.isArray(u.tags) ? u.tags : [];
+      return `
+        <div class="upstream-card">
+          <div class="row">
+            <div>
+              <div class="name">${escapeHtml(u.accountName || u.accountId || 'unknown')}</div>
+              <div class="sub mono">${escapeHtml(u.accountId || '-')}</div>
+            </div>
+            <div class="status"><span class="dot ${badge.cls}"></span><span>${escapeHtml(badge.text)}</span></div>
+          </div>
+          <div class="chips">
+            <span class="chip">priority: ${escapeHtml(u.priority ?? '-')}</span>
+            <span class="chip">inflight: ${escapeHtml(u.inflight ?? 0)}</span>
+            <span class="chip">deployCount: ${escapeHtml(u.deployCount ?? 0)}</span>
+            <span class="chip">failureCount: ${escapeHtml(u.failureCount ?? 0)}</span>
+            <span class="chip">statusCode: ${escapeHtml(u.lastStatusCode ?? 0)}</span>
+            ${tags.map(tag => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}
+          </div>
+          <div class="kv">
+            <div class="k">实例状态</div><div class="v">${escapeHtml(u.instanceStatus || '-')}</div>
+            <div class="k">baseUrl</div><div class="v mono">${u.baseUrl ? `<a href="${escapeHtml(u.baseUrl)}" target="_blank">${escapeHtml(u.baseUrl)}</a>` : '-'}</div>
+            <div class="k">shareUrl</div><div class="v mono">${u.shareUrl ? `<a href="${escapeHtml(u.shareUrl)}" target="_blank">${escapeHtml(u.shareUrl)}</a>` : '-'}</div>
+            <div class="k">localUrl</div><div class="v mono">${u.localUrl ? `<a href="${escapeHtml(u.localUrl)}" target="_blank">${escapeHtml(u.localUrl)}</a>` : '-'}</div>
+            <div class="k">到期时间</div><div class="v">${escapeHtml(expire)}</div>
+            <div class="k">上次部署</div><div class="v">${escapeHtml(lastDeploy)}</div>
+            <div class="k">冷却到</div><div class="v">${escapeHtml(cooldown)}</div>
+            <div class="k">最近成功</div><div class="v">${escapeHtml(fmtTime(u.lastOkAt))}</div>
+            <div class="k">最近错误</div><div class="v">${escapeHtml(u.lastError || '-')}</div>
+            <div class="k">错误时间</div><div class="v">${escapeHtml(fmtTime(u.lastErrorAt))}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    async function fetchJson(url) {
+      const res = await fetch(url, { cache: 'no-store' });
+      const text = await res.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch {}
+      return { ok: res.ok, status: res.status, body, text };
+    }
+
+    function applyAutoRefresh() {
+      if (state.timer) clearInterval(state.timer);
+      state.timer = null;
+      state.intervalMs = Number($('refreshMs').value || 0);
+      const enabled = state.intervalMs > 0;
+      $('autoDot').className = `dot ${enabled ? 'ok' : 'warn'}`;
+      if (enabled) {
+        state.timer = setInterval(refreshAll, state.intervalMs);
+      }
+    }
+
+    async function refreshAll() {
+      const [health, registry] = await Promise.all([
+        fetchJson('/health'),
+        fetchJson('/registry'),
+      ]);
+
+      $('relayDot').className = `dot ${health.ok ? 'ok' : 'bad'}`;
+      $('relayText').textContent = health.ok
+        ? `relay 正常（健康上游 ${health.body?.healthyUpstreams ?? 0}）`
+        : `relay 异常/无健康上游（HTTP ${health.status}）`;
+
+      if (!registry.ok || !registry.body) {
+        $('errorBox').style.display = 'block';
+        $('errorBox').textContent = `读取 /registry 失败\nHTTP ${registry.status}\n${registry.text || ''}`;
+        $('upstreamList').innerHTML = '';
+        return;
+      }
+
+      $('errorBox').style.display = 'none';
+      const data = registry.body;
+      const upstreams = Array.isArray(data.upstreams) ? [...data.upstreams] : [];
+      upstreams.sort((a, b) => {
+        const priority = (a.priority ?? 999) - (b.priority ?? 999);
+        if (priority !== 0) return priority;
+        return (a.inflight ?? 0) - (b.inflight ?? 0);
+      });
+
+      const healthyCount = upstreams.filter(u => u.healthy).length;
+      $('healthyCount').textContent = String(healthyCount);
+      $('totalCount').textContent = String(upstreams.length);
+      $('updatedAt').textContent = fmtTime(data.updatedAt);
+      $('primaryName').textContent = upstreams[0]?.accountName || upstreams[0]?.accountId || '-';
+      $('listMeta').textContent = `按 priority / inflight 排序，共 ${upstreams.length} 个上游`;
+      $('upstreamList').innerHTML = upstreams.length
+        ? upstreams.map(renderUpstreamCard).join('')
+        : '<div class="card">当前 registry 为空，请先运行 manager 同步上游。</div>';
+    }
+
+    $('refreshBtn').addEventListener('click', refreshAll);
+    $('refreshMs').addEventListener('change', () => {
+      applyAutoRefresh();
+      refreshAll();
+    });
+
+    applyAutoRefresh();
+    refreshAll();
+  </script>
+</body>
+</html>
