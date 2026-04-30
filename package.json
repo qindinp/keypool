@@ -14,6 +14,8 @@
     "manager:once": "node manager.mjs --once",
     "manager:status": "node manager.mjs --status",
     "manager:deploy": "node manager.mjs --deploy",
+    "relay": "node relay/server.mjs",
+    "relay:dev": "node --watch relay/server.mjs",
     "ws": "node ws-client.mjs",
     "probe": "node ws-probe.mjs"
   },

@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 /**
- * KeyPool Manager (Phase 2 skeleton)
+ * KeyPool Manager (Phase 3 control-plane bridge)
  *
  * 多账号入口：
  * - 从 accounts.json 读取多个小米账号
  * - 每个账号独立 logger / stateStore / worker
+ * - 维护 registry.json，给 relay 提供稳定上游池
  * - 支持 --status / --deploy / --once / 持续运行
- *
- * 说明：
- * - 本阶段只完成控制平面骨架
- * - 仍未包含 relay / registry / 路由转发
  */
 
 import { resolve, dirname } from 'node:path';
@@ -19,11 +16,13 @@ import { createStateStore } from './controller/state-store.mjs';
 import { createMimoApi } from './controller/mimo-api.mjs';
 import { createLogger } from './controller/logger.mjs';
 import { createAccountWorker } from './controller/account-worker.mjs';
+import { createRegistry } from './controller/registry.mjs';
 import { sleep } from './controller/utils.mjs';
 import { loadAccounts, getAccountsPath } from './controller/accounts.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = resolve(__dirname, '.manager');
+const REGISTRY_PATH = resolve(LOG_DIR, 'registry.json');
 
 function safeId(value) {
   return String(value).replace(/[^a-zA-Z0-9._-]+/g, '_');
@@ -68,28 +67,90 @@ async function validateRuntime(rt) {
   return true;
 }
 
-async function cmdStatus(runtimes) {
+async function syncRegistryForRuntime(rt, registry) {
+  const state = rt.stateStore.loadState();
+  let instanceStatus = 'UNKNOWN';
+  let expireTime = null;
+  let healthy = false;
+  let lastError = null;
+
+  try {
+    const status = await rt.api.getStatus(rt.account.cookie);
+    instanceStatus = status.status || 'UNKNOWN';
+    expireTime = status.expireTime || null;
+    healthy = instanceStatus === 'AVAILABLE' && !!(state.currentShareUrl || state.currentLocalUrl);
+  } catch (e) {
+    lastError = e.message;
+  }
+
+  registry.upsert({
+    accountId: rt.account.id,
+    accountName: rt.account.name,
+    userId: rt.auth?.userId || null,
+    userName: rt.auth?.userName || null,
+    baseUrl: state.currentShareUrl || state.currentLocalUrl || null,
+    shareUrl: state.currentShareUrl || null,
+    localUrl: state.currentLocalUrl || 'http://127.0.0.1:9200',
+    healthy,
+    priority: rt.account.priority,
+    tags: rt.account.tags || [],
+    instanceStatus,
+    expireTime,
+    deployed: Boolean(state.lastDeployAt),
+    deployCount: state.deployCount || 0,
+    lastDeployAt: state.lastDeployAt || null,
+    lastError,
+  });
+}
+
+async function syncRegistry(runtimes, registry) {
+  for (const rt of runtimes) {
+    await syncRegistryForRuntime(rt, registry);
+  }
+}
+
+async function cmdStatus(runtimes, registry) {
+  await syncRegistry(runtimes, registry);
   for (const rt of runtimes) {
     console.log(`\n================ ${rt.account.name} ================`);
     await rt.worker.cmdStatus();
   }
+  console.log('\n================ registry ================');
+  console.log(JSON.stringify(registry.load(), null, 2));
 }
 
-async function cmdDeploy(runtimes) {
+async function cmdDeploy(runtimes, registry) {
   for (const rt of runtimes) {
     rt.log('deploy', '强制重新部署...');
     await rt.worker.renewFlow('manual-deploy');
+    await syncRegistryForRuntime(rt, registry);
   }
 }
 
-async function runOnceOrLoop(runtimes, once) {
-  await Promise.all(runtimes.map(rt => rt.worker.runLoop({ once })));
+async function runOnceOrLoop(runtimes, once, registry, config) {
+  if (once) {
+    await Promise.all(runtimes.map(rt => rt.worker.runLoop({ once: true })));
+    await syncRegistry(runtimes, registry);
+    return;
+  }
+
+  await syncRegistry(runtimes, registry);
+  const loops = runtimes.map(rt => rt.worker.runLoop({ once: false }));
+  const registryLoop = (async () => {
+    while (true) {
+      await sleep(Math.max(15_000, Math.min(config.checkInterval, 60_000)));
+      await syncRegistry(runtimes, registry);
+    }
+  })();
+
+  await Promise.all([...loops, registryLoop]);
 }
 
 async function main() {
   const config = createConfig();
   const args = process.argv.slice(2);
   const accounts = loadAccounts();
+  const registry = createRegistry(REGISTRY_PATH);
 
   if (accounts.length === 0) {
     console.error(`❌ 未找到可用账号。请检查 ${getAccountsPath()}`);
@@ -114,8 +175,8 @@ async function main() {
     process.exit(1);
   }
 
-  if (args.includes('--status')) return cmdStatus(healthyRuntimes);
-  if (args.includes('--deploy')) return cmdDeploy(healthyRuntimes);
+  if (args.includes('--status')) return cmdStatus(healthyRuntimes, registry);
+  if (args.includes('--deploy')) return cmdDeploy(healthyRuntimes, registry);
 
   const once = args.includes('--once');
 
@@ -134,8 +195,9 @@ async function main() {
   console.log(`✅ 已加载 ${accounts.length} 个账号，Cookie 有效 ${validCount} 个`);
   console.log(`📁 账号配置: ${getAccountsPath()}`);
   console.log(`📁 运行目录: ${LOG_DIR}`);
+  console.log(`📁 registry: ${REGISTRY_PATH}`);
 
-  await runOnceOrLoop(healthyRuntimes, once);
+  await runOnceOrLoop(healthyRuntimes, once, registry, config);
 }
 
 main().catch(e => {
