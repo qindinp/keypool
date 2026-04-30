@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { createRegistry } from '../controller/registry.mjs';
 import { pickUpstream, listFallbackUpstreams } from './router.mjs';
 import { proxyJson, proxyStream } from './proxy.mjs';
@@ -16,6 +17,86 @@ const registryPath = process.env.RELAY_REGISTRY_PATH
 const registry = createRegistry(registryPath);
 const MAX_ATTEMPTS = parseInt(process.env.RELAY_MAX_ATTEMPTS || '3', 10);
 const adminHtmlPath = resolve(__dirname, 'admin.html');
+const rootDir = resolve(__dirname, '..');
+
+const managerControl = {
+  child: null,
+  lastExit: null,
+};
+
+function managerStatus() {
+  return {
+    running: Boolean(managerControl.child && managerControl.child.exitCode === null && !managerControl.child.killed),
+    pid: managerControl.child?.pid || null,
+    lastExit: managerControl.lastExit,
+  };
+}
+
+function startManagerProcess() {
+  const status = managerStatus();
+  if (status.running) {
+    return { ok: true, alreadyRunning: true, ...status };
+  }
+
+  const child = spawn(process.execPath, ['manager.mjs'], {
+    cwd: rootDir,
+    env: { ...process.env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(`[manager-control] ${chunk}`);
+  });
+
+  child.stderr.on('data', (chunk) => {
+    process.stderr.write(`[manager-control] ${chunk}`);
+  });
+
+  child.on('exit', (code, signal) => {
+    managerControl.lastExit = {
+      code: code ?? null,
+      signal: signal ?? null,
+      at: new Date().toISOString(),
+    };
+    if (managerControl.child === child) {
+      managerControl.child = null;
+    }
+  });
+
+  managerControl.child = child;
+  return { ok: true, alreadyRunning: false, ...managerStatus() };
+}
+
+function stopManagerProcess() {
+  const child = managerControl.child;
+  if (!child || child.exitCode !== null || child.killed) {
+    managerControl.child = null;
+    return Promise.resolve({ ok: true, alreadyStopped: true, ...managerStatus() });
+  }
+
+  return new Promise((resolve) => {
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      resolve({ ok: true, alreadyStopped: false, ...managerStatus() });
+    };
+
+    child.once('exit', done);
+    child.kill('SIGTERM');
+    setTimeout(() => {
+      if (!finished) {
+        try { child.kill('SIGKILL'); } catch {}
+      }
+    }, 1500);
+    setTimeout(done, 2200);
+  });
+}
+
+async function restartManagerProcess() {
+  await stopManagerProcess();
+  return startManagerProcess();
+}
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2) + '\n';
@@ -274,12 +355,36 @@ async function handleProxy(req, res, path) {
   });
 }
 
+async function handleControlApi(req, res, url) {
+  if (url.pathname === '/api/control/status' && req.method === 'GET') {
+    return sendJson(res, 200, managerStatus());
+  }
+
+  if (url.pathname === '/api/control/start' && req.method === 'POST') {
+    return sendJson(res, 200, startManagerProcess());
+  }
+
+  if (url.pathname === '/api/control/stop' && req.method === 'POST') {
+    return sendJson(res, 200, await stopManagerProcess());
+  }
+
+  if (url.pathname === '/api/control/retry' && req.method === 'POST') {
+    return sendJson(res, 200, await restartManagerProcess());
+  }
+
+  return sendJson(res, 404, { error: 'not_found', message: '支持的控制路径: /api/control/status /api/control/start /api/control/stop /api/control/retry' });
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
     if (url.pathname === '/' || url.pathname === '/admin') {
       return sendHtml(res, 200, loadAdminHtml());
+    }
+
+    if (url.pathname.startsWith('/api/control/')) {
+      return handleControlApi(req, res, url);
     }
 
     if (url.pathname === '/health') {
@@ -307,7 +412,7 @@ const server = createServer(async (req, res) => {
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: / /admin /health /registry /v1/models /v1/embeddings /v1/chat/completions',
+      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /health /registry /v1/models /v1/embeddings /v1/chat/completions',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });

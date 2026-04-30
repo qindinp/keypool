@@ -184,7 +184,7 @@ async function testAdminPage() {
   const res = await fetch(`http://127.0.0.1:${relayPort}/admin`);
   assert(res.status === 200, `expected /admin 200, got ${res.status}`);
   const html = await res.text();
-  assert(html.includes('KeyPool Relay 管理界面'), 'admin page missing title');
+  assert(html.includes('KeyPool 控制台'), 'admin page missing title');
   assert(html.includes('/registry'), 'admin page should reference /registry');
 }
 
@@ -284,6 +284,35 @@ async function testAllUpstreamsFailed() {
   assert(fallback?.failureCount >= 1, 'fallback should record failure');
 }
 
+async function testControlApi() {
+  let status = await fetch(`http://127.0.0.1:${relayPort}/api/control/status`);
+  assert(status.status === 200, `expected /api/control/status 200, got ${status.status}`);
+  let body = await status.json();
+  assert(body?.running === false, 'manager should be stopped initially in relay test');
+
+  let start = await fetch(`http://127.0.0.1:${relayPort}/api/control/start`, { method: 'POST' });
+  assert(start.status === 200, `expected /api/control/start 200, got ${start.status}`);
+  body = await start.json();
+  assert(body?.running === true, 'manager should be running after start');
+
+  status = await fetch(`http://127.0.0.1:${relayPort}/api/control/status`);
+  body = await status.json();
+  assert(body?.running === true, 'manager status should report running');
+
+  let stop = await fetch(`http://127.0.0.1:${relayPort}/api/control/stop`, { method: 'POST' });
+  assert(stop.status === 200, `expected /api/control/stop 200, got ${stop.status}`);
+  body = await stop.json();
+  assert(body?.running === false, 'manager should be stopped after stop');
+
+  let retry = await fetch(`http://127.0.0.1:${relayPort}/api/control/retry`, { method: 'POST' });
+  assert(retry.status === 200, `expected /api/control/retry 200, got ${retry.status}`);
+  body = await retry.json();
+  assert(body?.running === true, 'manager should be running after retry');
+
+  stop = await fetch(`http://127.0.0.1:${relayPort}/api/control/stop`, { method: 'POST' });
+  assert(stop.status === 200, `expected final /api/control/stop 200, got ${stop.status}`);
+}
+
 async function main() {
   mkdirSync(tempRoot, { recursive: true });
   let primary;
@@ -304,6 +333,7 @@ async function main() {
 
     await testNoHealthyUpstream();
     await testAdminPage();
+    await testControlApi();
     await testJsonRoutes();
     await testStreamRoute();
 

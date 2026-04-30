@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>KeyPool Relay Admin</title>
+  <title>KeyPool 控制台</title>
   <style>
     :root {
       color-scheme: dark;
@@ -38,7 +38,7 @@
       align-items: flex-start;
       margin-bottom: 18px;
     }
-    h1 { margin: 0 0 8px; font-size: 28px; }
+    h1 { margin: 0 0 8px; font-size: 30px; }
     .sub { color: var(--muted); }
     .toolbar {
       display: flex;
@@ -56,6 +56,19 @@
       cursor: pointer;
     }
     button:hover { filter: brightness(1.08); }
+    .primary-btn {
+      background: linear-gradient(135deg, #2b7fff, #5b9dff);
+      border-color: rgba(255,255,255,.08);
+      color: white;
+    }
+    .danger-btn {
+      background: linear-gradient(135deg, #b83e4b, #db5e6a);
+      border-color: rgba(255,255,255,.08);
+      color: white;
+    }
+    .secondary-btn {
+      background: rgba(255,255,255,.04);
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -92,6 +105,27 @@
     .dot.ok { background: var(--ok); }
     .dot.warn { background: var(--warn); }
     .dot.bad { background: var(--bad); }
+    .big-address {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--line);
+      margin-top: 12px;
+    }
+    .big-address code {
+      font-size: 16px;
+      color: #cfe2ff;
+      word-break: break-all;
+    }
+    .tip {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 10px;
+    }
     .list {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
@@ -139,6 +173,21 @@
       padding: 12px;
       color: #ffd1d1;
     }
+    details.advanced {
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(18, 26, 49, .85);
+      overflow: hidden;
+    }
+    details.advanced > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 16px;
+      font-weight: 600;
+    }
+    details.advanced > summary::-webkit-details-marker { display: none; }
+    .advanced-inner { padding: 0 16px 16px; }
     .footer { color: var(--muted); margin-top: 18px; font-size: 12px; }
     a { color: #8fc6ff; text-decoration: none; }
     a:hover { text-decoration: underline; }
@@ -146,6 +195,7 @@
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .hero { flex-direction: column; }
       .toolbar { justify-content: flex-start; }
+      .big-address { flex-direction: column; align-items: flex-start; }
     }
     @media (max-width: 600px) {
       .grid { grid-template-columns: 1fr; }
@@ -158,10 +208,24 @@
   <div class="wrap">
     <div class="hero">
       <div>
-        <h1>KeyPool Relay 管理界面</h1>
-        <div class="sub">真实读取 relay 当前 registry，展示上游状态、健康度、冷却、错误与访问入口。</div>
+        <h1>KeyPool 控制台</h1>
+        <div class="sub">你只需要看服务是否可用，然后复制接入地址即可。</div>
+        <div class="big-address">
+          <div>
+            <div class="metric-label">推荐接入地址</div>
+            <code id="accessUrl">http://127.0.0.1:9300/v1</code>
+            <div class="tip">把这个地址填到 OpenClaw、脚本或 SDK 的 base_url 即可。</div>
+          </div>
+          <div class="toolbar">
+            <button id="copyAccessBtn" class="primary-btn">复制接入地址</button>
+            <button id="copyOpenClawBtn" class="secondary-btn">复制 OpenClaw 配置</button>
+          </div>
+        </div>
       </div>
       <div class="toolbar">
+        <button id="startBtn" class="primary-btn">启动</button>
+        <button id="stopBtn" class="danger-btn">停止</button>
+        <button id="retryBtn" class="secondary-btn">重试</button>
         <label class="status"><span class="dot" id="autoDot"></span><span>自动刷新</span></label>
         <select id="refreshMs">
           <option value="0">关闭自动刷新</option>
@@ -176,45 +240,52 @@
 
     <div class="grid">
       <div class="card">
-        <div class="metric-label">可用上游</div>
+        <div class="metric-label">服务状态</div>
+        <div class="metric-value" id="serviceStatus">检查中</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">后台任务</div>
+        <div class="metric-value" id="managerStatus">检查中</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">可用连接</div>
         <div class="metric-value" id="healthyCount">-</div>
       </div>
       <div class="card">
-        <div class="metric-label">总上游数</div>
-        <div class="metric-value" id="totalCount">-</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">当前主路由</div>
+        <div class="metric-label">当前使用节点</div>
         <div class="metric-value" id="primaryName" style="font-size:22px">-</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">上次同步</div>
-        <div class="metric-value" id="updatedAt" style="font-size:18px">-</div>
       </div>
     </div>
 
     <div class="section-title">
-      <h2>Relay 概览</h2>
+      <h2>当前状态</h2>
       <div class="status"><span class="dot" id="relayDot"></span><span id="relayText">检查中...</span></div>
     </div>
     <div class="card">
       <div class="kv">
-        <div class="k">健康接口</div><div class="v mono"><a href="/health" target="_blank">/health</a></div>
-        <div class="k">Registry</div><div class="v mono"><a href="/registry" target="_blank">/registry</a></div>
-        <div class="k">Models</div><div class="v mono"><a href="/v1/models" target="_blank">/v1/models</a></div>
-        <div class="k">管理页</div><div class="v mono"><a href="/admin" target="_blank">/admin</a></div>
+        <div class="k">服务地址</div><div class="v mono"><a id="rootLink" href="/admin" target="_blank">/admin</a></div>
+        <div class="k">模型接口</div><div class="v mono"><a id="modelsLink" href="/v1/models" target="_blank">/v1/models</a></div>
+        <div class="k">健康检查</div><div class="v mono"><a id="healthLink" href="/health" target="_blank">/health</a></div>
+        <div class="k">原始状态</div><div class="v mono"><a id="registryLink" href="/registry" target="_blank">/registry</a></div>
       </div>
+      <div class="tip">如果服务状态是绿色，通常你就可以直接使用上面的接入地址了。</div>
+      <div class="tip" id="controlTip">你可以在这里启动、停止或重试后台同步服务。</div>
     </div>
 
-    <div class="section-title">
-      <h2>上游实例</h2>
-      <div class="sub" id="listMeta">-</div>
-    </div>
-    <div id="errorBox" class="error-box" style="display:none"></div>
-    <div id="upstreamList" class="list"></div>
+    <details class="advanced">
+      <summary>高级信息（调试时再看）</summary>
+      <div class="advanced-inner">
+        <div class="section-title">
+          <h2>连接节点</h2>
+          <div class="sub" id="listMeta">-</div>
+        </div>
+        <div id="errorBox" class="error-box" style="display:none"></div>
+        <div id="upstreamList" class="list"></div>
+      </div>
+    </details>
 
     <div class="footer">
-      提示：本页只读，不直接改 manager / registry。若没有健康上游，请先运行 manager 同步并完成部署。
+      普通使用者只需要：启动服务 → 确认状态正常 → 复制接入地址 → 粘贴到你的客户端。
     </div>
   </div>
 
@@ -247,12 +318,6 @@
       return diff >= 0 ? `${days} 天后` : `${days} 天前`;
     }
 
-    function statusBadge(ok, warnText, badText) {
-      if (ok === true) return { cls: 'ok', text: '健康' };
-      if (warnText) return { cls: 'warn', text: warnText };
-      return { cls: 'bad', text: badText || '异常' };
-    }
-
     function escapeHtml(text) {
       return String(text ?? '')
         .replace(/&/g, '&amp;')
@@ -262,8 +327,14 @@
         .replace(/'/g, '&#39;');
     }
 
+    function statusBadge(u) {
+      if (u.healthy === true) return { cls: 'ok', text: '可用' };
+      if (u.instanceStatus === 'AVAILABLE') return { cls: 'warn', text: '恢复中' };
+      return { cls: 'bad', text: u.instanceStatus || '异常' };
+    }
+
     function renderUpstreamCard(u) {
-      const badge = statusBadge(u.healthy, u.instanceStatus === 'AVAILABLE' ? '待健康检查' : null, u.instanceStatus || '异常');
+      const badge = statusBadge(u);
       const cooldown = u.cooldownUntil ? `${fmtTime(u.cooldownUntil)}（${fmtRelative(u.cooldownUntil)}）` : '-';
       const expire = u.expireTime ? `${fmtTime(u.expireTime)}（${fmtRelative(u.expireTime)}）` : '-';
       const lastDeploy = u.lastDeployAt ? `${fmtTime(u.lastDeployAt)}（${fmtRelative(u.lastDeployAt)}）` : '-';
@@ -278,21 +349,21 @@
             <div class="status"><span class="dot ${badge.cls}"></span><span>${escapeHtml(badge.text)}</span></div>
           </div>
           <div class="chips">
-            <span class="chip">priority: ${escapeHtml(u.priority ?? '-')}</span>
-            <span class="chip">inflight: ${escapeHtml(u.inflight ?? 0)}</span>
-            <span class="chip">deployCount: ${escapeHtml(u.deployCount ?? 0)}</span>
-            <span class="chip">failureCount: ${escapeHtml(u.failureCount ?? 0)}</span>
-            <span class="chip">statusCode: ${escapeHtml(u.lastStatusCode ?? 0)}</span>
+            <span class="chip">优先级: ${escapeHtml(u.priority ?? '-')}</span>
+            <span class="chip">并发中: ${escapeHtml(u.inflight ?? 0)}</span>
+            <span class="chip">部署次数: ${escapeHtml(u.deployCount ?? 0)}</span>
+            <span class="chip">异常次数: ${escapeHtml(u.failureCount ?? 0)}</span>
+            <span class="chip">状态码: ${escapeHtml(u.lastStatusCode ?? 0)}</span>
             ${tags.map(tag => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}
           </div>
           <div class="kv">
             <div class="k">实例状态</div><div class="v">${escapeHtml(u.instanceStatus || '-')}</div>
-            <div class="k">baseUrl</div><div class="v mono">${u.baseUrl ? `<a href="${escapeHtml(u.baseUrl)}" target="_blank">${escapeHtml(u.baseUrl)}</a>` : '-'}</div>
-            <div class="k">shareUrl</div><div class="v mono">${u.shareUrl ? `<a href="${escapeHtml(u.shareUrl)}" target="_blank">${escapeHtml(u.shareUrl)}</a>` : '-'}</div>
-            <div class="k">localUrl</div><div class="v mono">${u.localUrl ? `<a href="${escapeHtml(u.localUrl)}" target="_blank">${escapeHtml(u.localUrl)}</a>` : '-'}</div>
+            <div class="k">当前入口</div><div class="v mono">${u.baseUrl ? `<a href="${escapeHtml(u.baseUrl)}" target="_blank">${escapeHtml(u.baseUrl)}</a>` : '-'}</div>
+            <div class="k">分享地址</div><div class="v mono">${u.shareUrl ? `<a href="${escapeHtml(u.shareUrl)}" target="_blank">${escapeHtml(u.shareUrl)}</a>` : '-'}</div>
+            <div class="k">本地地址</div><div class="v mono">${u.localUrl ? `<a href="${escapeHtml(u.localUrl)}" target="_blank">${escapeHtml(u.localUrl)}</a>` : '-'}</div>
             <div class="k">到期时间</div><div class="v">${escapeHtml(expire)}</div>
             <div class="k">上次部署</div><div class="v">${escapeHtml(lastDeploy)}</div>
-            <div class="k">冷却到</div><div class="v">${escapeHtml(cooldown)}</div>
+            <div class="k">恢复等待</div><div class="v">${escapeHtml(cooldown)}</div>
             <div class="k">最近成功</div><div class="v">${escapeHtml(fmtTime(u.lastOkAt))}</div>
             <div class="k">最近错误</div><div class="v">${escapeHtml(u.lastError || '-')}</div>
             <div class="k">错误时间</div><div class="v">${escapeHtml(fmtTime(u.lastErrorAt))}</div>
@@ -309,32 +380,60 @@
       return { ok: res.ok, status: res.status, body, text };
     }
 
+    async function postJson(url) {
+      const res = await fetch(url, { method: 'POST', cache: 'no-store' });
+      const text = await res.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch {}
+      return { ok: res.ok, status: res.status, body, text };
+    }
+
+    async function copyText(text, successText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        alert(successText);
+      } catch {
+        alert(`复制失败，请手动复制：\n${text}`);
+      }
+    }
+
     function applyAutoRefresh() {
       if (state.timer) clearInterval(state.timer);
       state.timer = null;
       state.intervalMs = Number($('refreshMs').value || 0);
       const enabled = state.intervalMs > 0;
       $('autoDot').className = `dot ${enabled ? 'ok' : 'warn'}`;
-      if (enabled) {
-        state.timer = setInterval(refreshAll, state.intervalMs);
-      }
+      if (enabled) state.timer = setInterval(refreshAll, state.intervalMs);
     }
 
     async function refreshAll() {
-      const [health, registry] = await Promise.all([
+      const origin = window.location.origin;
+      const accessUrl = `${origin}/v1`;
+      $('accessUrl').textContent = accessUrl;
+
+      const [health, registry, control] = await Promise.all([
         fetchJson('/health'),
         fetchJson('/registry'),
+        fetchJson('/api/control/status'),
       ]);
 
       $('relayDot').className = `dot ${health.ok ? 'ok' : 'bad'}`;
       $('relayText').textContent = health.ok
-        ? `relay 正常（健康上游 ${health.body?.healthyUpstreams ?? 0}）`
-        : `relay 异常/无健康上游（HTTP ${health.status}）`;
+        ? `服务正常（可用连接 ${health.body?.healthyUpstreams ?? 0}）`
+        : `当前不可用（HTTP ${health.status}）`;
+      $('serviceStatus').textContent = health.ok ? '可用' : '恢复中';
+      $('managerStatus').textContent = control.body?.running ? '已启动' : '未启动';
+      $('controlTip').textContent = control.body?.running
+        ? `后台同步正在运行（PID ${control.body?.pid ?? '-'}）`
+        : '后台同步当前未运行，可点击“启动”或“重试”';
 
       if (!registry.ok || !registry.body) {
         $('errorBox').style.display = 'block';
         $('errorBox').textContent = `读取 /registry 失败\nHTTP ${registry.status}\n${registry.text || ''}`;
         $('upstreamList').innerHTML = '';
+        $('healthyCount').textContent = '0';
+        $('updatedAt').textContent = '-';
+        $('primaryName').textContent = '-';
         return;
       }
 
@@ -349,19 +448,48 @@
 
       const healthyCount = upstreams.filter(u => u.healthy).length;
       $('healthyCount').textContent = String(healthyCount);
-      $('totalCount').textContent = String(upstreams.length);
       $('updatedAt').textContent = fmtTime(data.updatedAt);
       $('primaryName').textContent = upstreams[0]?.accountName || upstreams[0]?.accountId || '-';
-      $('listMeta').textContent = `按 priority / inflight 排序，共 ${upstreams.length} 个上游`;
+      $('listMeta').textContent = `共 ${upstreams.length} 个连接节点，已按优先级排序`;
       $('upstreamList').innerHTML = upstreams.length
         ? upstreams.map(renderUpstreamCard).join('')
-        : '<div class="card">当前 registry 为空，请先运行 manager 同步上游。</div>';
+        : '<div class="card">当前还没有可用连接，请先启动后台服务并等待同步完成。</div>';
     }
 
     $('refreshBtn').addEventListener('click', refreshAll);
     $('refreshMs').addEventListener('change', () => {
       applyAutoRefresh();
       refreshAll();
+    });
+    $('copyAccessBtn').addEventListener('click', () => {
+      copyText($('accessUrl').textContent, '已复制接入地址');
+    });
+    $('copyOpenClawBtn').addEventListener('click', () => {
+      const config = JSON.stringify({
+        models: {
+          providers: {
+            openai: {
+              baseUrl: $('accessUrl').textContent
+            }
+          }
+        }
+      }, null, 2);
+      copyText(config, '已复制 OpenClaw 配置片段');
+    });
+    $('startBtn').addEventListener('click', async () => {
+      $('controlTip').textContent = '正在启动后台同步服务...';
+      await postJson('/api/control/start');
+      await refreshAll();
+    });
+    $('stopBtn').addEventListener('click', async () => {
+      $('controlTip').textContent = '正在停止后台同步服务...';
+      await postJson('/api/control/stop');
+      await refreshAll();
+    });
+    $('retryBtn').addEventListener('click', async () => {
+      $('controlTip').textContent = '正在重试后台同步服务...';
+      await postJson('/api/control/retry');
+      await refreshAll();
     });
 
     applyAutoRefresh();

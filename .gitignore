@@ -9,3 +9,4 @@ config.json
 .controller.log
 .tunnel-url
 config.json
+.manager/

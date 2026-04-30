@@ -150,11 +150,15 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     }
 
     if (!newStatus.expireTime) {
-      log('error', '创建返回异常:', JSON.stringify(newStatus));
-      return false;
+      if (newStatus.status === 'CREATING' || newStatus.status === 'AVAILABLE') {
+        log('info', `创建请求已接受，当前状态: ${newStatus.status}，继续等待实例就绪`);
+      } else {
+        log('error', '创建返回异常:', JSON.stringify(newStatus));
+        return false;
+      }
+    } else {
+      log('ok', `新实例到期: ${new Date(newStatus.expireTime).toLocaleString()}`);
     }
-
-    log('ok', `新实例到期: ${new Date(newStatus.expireTime).toLocaleString()}`);
 
     const ready = await waitForReady();
     if (!ready) {
@@ -261,21 +265,37 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       try {
         const status = await api.getStatus(cookie);
         const now = Date.now();
-        const remaining = status.expireTime - now;
-        const remainMin = Math.round(remaining / 60_000);
+        const expireTime = Number(status.expireTime || 0);
+        const hasExpireTime = Number.isFinite(expireTime) && expireTime > 0;
+        const remaining = hasExpireTime ? (expireTime - now) : -1;
+        const remainMin = hasExpireTime ? Math.round(remaining / 60_000) : null;
 
-        if (state.lastExpireTime !== status.expireTime) {
-          log('info', `实例 ${status.status} | 剩余 ${remainMin}min | 到期 ${new Date(status.expireTime).toLocaleString()}`);
-          state.lastExpireTime = status.expireTime;
+        const currentStatus = status.status || 'UNKNOWN';
+        const currentShareUrl = state.currentShareUrl || null;
+        const currentLocalUrl = state.currentLocalUrl || null;
+        const hasDeployment = Boolean(state.lastDeployAt) && Boolean(currentShareUrl || currentLocalUrl);
+        if (state.lastExpireTime !== status.expireTime || state.lastObservedStatus !== currentStatus) {
+          const remainText = hasExpireTime ? `${remainMin}min` : '未知';
+          const expireText = hasExpireTime ? new Date(expireTime).toLocaleString() : '未知';
+          log('info', `实例 ${currentStatus} | 剩余 ${remainText} | 到期 ${expireText}`);
+          state.lastExpireTime = status.expireTime || null;
+          state.lastObservedStatus = currentStatus;
           stateStore.saveState(state, log);
         }
 
-        if (remaining > 0 && remaining < config.renewBefore) {
+        if (currentStatus === 'DESTROYED' || currentStatus === 'FAILED' || currentStatus === 'ERROR') {
+          log('warn', `实例状态异常: ${currentStatus}，尝试自动重建`);
+          await renewFlow(`status-${String(currentStatus).toLowerCase()}`);
+        } else if (!hasExpireTime) {
+          log('warn', '实例缺少 expireTime，尝试自动重建');
+          await renewFlow('missing-expire-time');
+        } else if (currentStatus === 'AVAILABLE' && !hasDeployment) {
+          log('warn', '实例已可用但尚未完成部署，尝试自动部署');
+          await renewFlow('available-but-not-deployed');
+        } else if (remaining > 0 && remaining < config.renewBefore) {
           log('clock', `⏰ 即将到期 (剩余 ${remainMin}min)`);
           await renewFlow('expiring');
-        }
-
-        if (remaining <= 0) {
+        } else if (remaining <= 0) {
           log('error', '❌ 实例已过期!');
           await renewFlow('expired');
         }
