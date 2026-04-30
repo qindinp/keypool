@@ -9,7 +9,9 @@ import { proxyJson, proxyStream } from './proxy.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = parseInt(process.env.RELAY_PORT || '9300', 10);
 const host = process.env.RELAY_HOST || '127.0.0.1';
-const registryPath = resolve(__dirname, '..', '.manager', 'registry.json');
+const registryPath = process.env.RELAY_REGISTRY_PATH
+  ? resolve(process.env.RELAY_REGISTRY_PATH)
+  : resolve(__dirname, '..', '.manager', 'registry.json');
 const registry = createRegistry(registryPath);
 const MAX_ATTEMPTS = parseInt(process.env.RELAY_MAX_ATTEMPTS || '3', 10);
 

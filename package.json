@@ -16,6 +16,7 @@
     "manager:deploy": "node manager.mjs --deploy",
     "relay": "node relay/server.mjs",
     "relay:dev": "node --watch relay/server.mjs",
+    "test:relay": "node scripts/test-relay.mjs",
     "ws": "node ws-client.mjs",
     "probe": "node ws-probe.mjs"
   },
