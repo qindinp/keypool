@@ -21,10 +21,10 @@ let tunnelProcess = null;
 function extractPublicUrl(text) {
   // 匹配隧道服务返回的 URL — 通常包含 "https://" 且在行首或冒号后
   const patterns = [
-    // "https://xxx.lhr.life" 或 "https://xxx.serveo.net" 等常见格式
-    /(https?:\/\/[a-zA-Z0-9._-]+\.(?:lhr\.life|serveo\.net|localhost\.run)[^\s"'<>]*)/,
-    // 通用隧道 URL（fallback）— 匹配 "https://xxx-yyy-zzz.tunnel.service/" 格式
-    /(https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}\/[^\s"'<>]*)/,
+    // 隧道 URL 总是出现在 "tunneled" 行，格式如: xxx.lhr.life tunneled with tls termination, https://xxx.lhr.life
+    /tunneled.*?(https?:\/\/[a-zA-Z0-9._-]+\.(?:lhr\.life|serveo\.net)[^\s"'<>]*)/,
+    // fallback: 匹配 *.lhr.life 或 *.serveo.net（排除 admin 和已知非隧道域名）
+    /(https?:\/\/[a-zA-Z0-9][a-zA-Z0-9-]*\.(?:lhr\.life|serveo\.net)[^\s"'<>]*)/,
   ];
 
   for (const re of patterns) {
@@ -53,7 +53,7 @@ export function startTunnel(port, opts = {}) {
     args = ['-o', 'StrictHostKeyChecking=no', '-o', 'ServerAliveInterval=60', '-R', `80:localhost:${port}`, 'serveo.net'];
   } else {
     cmd = 'ssh';
-    args = ['-o', 'StrictHostKeyChecking=no', '-o', 'ServerAliveInterval=60', '-R', `80:localhost:${port}`, 'nokey@localhost.run'];
+    args = ['-o', 'StrictHostKeyChecking=no', '-o', 'ServerAliveInterval=60', '-R', `80:localhost:${port}`, 'localhost.run'];
   }
 
   log('info', `🌐 正在建立 SSH 隧道 (${service})...`);
