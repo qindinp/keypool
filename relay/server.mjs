@@ -4,7 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRegistry } from '../controller/registry.mjs';
 import { pickUpstream, listFallbackUpstreams } from './router.mjs';
-import { proxyJson } from './proxy.mjs';
+import { proxyJson, proxyStream } from './proxy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = parseInt(process.env.RELAY_PORT || '9300', 10);
@@ -37,6 +37,33 @@ function candidateList() {
   return [primary, ...listFallbackUpstreams(registry, [primary.accountId])].slice(0, MAX_ATTEMPTS);
 }
 
+function passthroughHeaders(headers) {
+  const allow = [
+    'content-type',
+    'cache-control',
+    'connection',
+    'x-request-id',
+    'transfer-encoding',
+    'date',
+  ];
+  const next = {};
+  for (const key of allow) {
+    if (headers[key]) next[key] = headers[key];
+  }
+  return next;
+}
+
+function isStreamingChatRequest(path, body) {
+  if (!path.startsWith('/v1/chat/completions')) return false;
+  if (!body) return false;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed?.stream === true;
+  } catch {
+    return false;
+  }
+}
+
 async function forwardViaUpstream(upstream, req, path, body) {
   registry.markInflight(upstream.accountId, 1);
   try {
@@ -65,6 +92,76 @@ async function forwardViaUpstream(upstream, req, path, body) {
   }
 }
 
+async function handleStreamProxy(req, res, path, body) {
+  const upstreams = candidateList();
+  if (upstreams.length === 0) {
+    return sendJson(res, 503, {
+      error: 'no_healthy_upstream',
+      message: '当前没有可用上游，请先运行 manager 完成部署并同步 registry',
+    });
+  }
+
+  const attempts = [];
+  for (const upstream of upstreams) {
+    registry.markInflight(upstream.accountId, 1);
+    let responseStarted = false;
+    try {
+      await proxyStream({
+        baseUrl: upstream.baseUrl,
+        method: req.method,
+        path,
+        body,
+        headers: {
+          authorization: req.headers.authorization || '',
+        },
+        onResponse: async (upstreamRes) => {
+          const statusCode = upstreamRes.statusCode || 502;
+
+          if (statusCode >= 500) {
+            let errorBody = '';
+            for await (const chunk of upstreamRes) errorBody += chunk;
+            registry.markFailure(upstream.accountId, `upstream ${statusCode}`, { statusCode });
+            attempts.push({
+              accountId: upstream.accountId,
+              baseUrl: upstream.baseUrl,
+              statusCode,
+              error: errorBody || `upstream ${statusCode}`,
+            });
+            return;
+          }
+
+          responseStarted = true;
+          registry.markSuccess(upstream.accountId, { lastStatusCode: statusCode });
+          res.writeHead(statusCode, passthroughHeaders(upstreamRes.headers));
+          upstreamRes.on('data', chunk => res.write(chunk));
+          upstreamRes.on('end', () => res.end());
+          upstreamRes.on('error', (error) => {
+            registry.markFailure(upstream.accountId, error.message);
+            if (!res.writableEnded) res.end();
+          });
+        },
+      });
+
+      if (responseStarted) return;
+    } catch (e) {
+      registry.markFailure(upstream.accountId, e.message);
+      attempts.push({
+        accountId: upstream.accountId,
+        baseUrl: upstream.baseUrl,
+        statusCode: 0,
+        error: e.message,
+      });
+    } finally {
+      registry.markInflight(upstream.accountId, -1);
+    }
+  }
+
+  return sendJson(res, 502, {
+    error: 'all_upstreams_failed',
+    attempts,
+  });
+}
+
 async function handleProxy(req, res, path) {
   const upstreams = candidateList();
   if (upstreams.length === 0) {
@@ -75,8 +172,11 @@ async function handleProxy(req, res, path) {
   }
 
   const body = req.method === 'GET' ? null : await readBody(req);
-  const attempts = [];
+  if (isStreamingChatRequest(path, body)) {
+    return handleStreamProxy(req, res, path, body);
+  }
 
+  const attempts = [];
   for (const upstream of upstreams) {
     const forwarded = await forwardViaUpstream(upstream, req, path, body);
     if (forwarded.ok) {
