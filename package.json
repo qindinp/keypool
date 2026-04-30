@@ -1,7 +1,7 @@
 {
   "name": "keypool",
-  "version": "0.2.0",
-  "description": "API Key pool proxy for OpenAI-compatible LLM services",
+  "version": "0.4.0",
+  "description": "OpenAI API Key Pool Proxy — 多 Key 聚合代理，零依赖",
   "main": "server.mjs",
   "type": "module",
   "scripts": {

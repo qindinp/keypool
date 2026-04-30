@@ -6,13 +6,14 @@
   "logLevel": "info",
   "healthCheckIntervalMs": 300000,
   "keyRetryDelayMs": 60000,
+  "maxRetries": 3,
   "tunnel": true,
   "// tunnelService": "serveo.net 或 localhost.run（默认 localhost.run）",
 
   "// keys": [
   "//   { \"id\": \"my-key-1\", \"key\": \"sk-...\" },
   "//   { \"id\": \"my-key-2\", \"key\": \"sk-...\", \"baseUrl\": \"https://custom-api.example.com/v1\" }"
-  "// ],
+  "// ]",
 
   "// openclawConfig": "/custom/path/to/openclaw.json"
 }
