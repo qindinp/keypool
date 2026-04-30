@@ -1,0 +1,26 @@
+{
+  "name": "keypool",
+  "version": "0.4.0",
+  "description": "OpenAI API Key Pool Proxy — 多 Key 聚合代理，零依赖",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "app": "node app.mjs",
+    "controller": "node controller.mjs",
+    "controller:once": "node controller.mjs --once",
+    "controller:status": "node controller.mjs --status",
+    "manager": "node manager.mjs",
+    "manager:once": "node manager.mjs --once",
+    "manager:status": "node manager.mjs --status",
+    "manager:deploy": "node manager.mjs --deploy",
+    "relay": "node relay/server.mjs",
+    "relay:dev": "node --watch relay/server.mjs",
+    "test:relay": "node scripts/test-relay.mjs",
+    "ws": "node ws-client.mjs",
+    "probe": "node ws-probe.mjs"
+  },
+  "keywords": ["openai", "proxy", "key-pool", "llm"],
+  "license": "MIT"
+}

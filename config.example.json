@@ -1,0 +1,19 @@
+{
+  "// 说明": "KeyPool 会自动读取 OpenClaw 配置（~/.openclaw/openclaw.json），无需手动填 key",
+  "// 如果": "你想手动指定 key，取消下面 keys 的注释",
+
+  "port": 9200,
+  "logLevel": "info",
+  "healthCheckIntervalMs": 300000,
+  "keyRetryDelayMs": 60000,
+  "maxRetries": 3,
+  "tunnel": true,
+  "// tunnelService": "serveo.net 或 localhost.run（默认 localhost.run）",
+
+  "// keys": [
+  "//   { \"id\": \"my-key-1\", \"key\": \"sk-...\" },
+  "//   { \"id\": \"my-key-2\", \"key\": \"sk-...\", \"baseUrl\": \"https://custom-api.example.com/v1\" }"
+  "// ]",
+
+  "// openclawConfig": "/custom/path/to/openclaw.json"
+}
