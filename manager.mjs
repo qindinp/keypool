@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 /**
- * KeyPool Manager (Phase 3 control-plane bridge)
- *
- * 多账号入口：
- * - 从 accounts.json 读取多个小米账号
- * - 每个账号独立 logger / stateStore / worker
- * - 维护 registry.json，给 relay 提供稳定上游池
- * - 支持 --status / --deploy / --once / 持续运行
+ * KeyPool Manager (Phase 3.5 health-aware registry sync)
  */
 
 import { resolve, dirname } from 'node:path';
@@ -19,6 +13,7 @@ import { createAccountWorker } from './controller/account-worker.mjs';
 import { createRegistry } from './controller/registry.mjs';
 import { sleep } from './controller/utils.mjs';
 import { loadAccounts, getAccountsPath } from './controller/accounts.mjs';
+import { probeHealth } from './relay/proxy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = resolve(__dirname, '.manager');
@@ -67,28 +62,40 @@ async function validateRuntime(rt) {
   return true;
 }
 
+async function computeEndpointHealth(baseUrl) {
+  if (!baseUrl) return { healthy: false, healthStatusCode: 0, healthError: 'missing baseUrl' };
+  const result = await probeHealth({ baseUrl, timeoutMs: 15_000 });
+  return {
+    healthy: result.ok,
+    healthStatusCode: result.statusCode,
+    healthError: result.ok ? null : (result.error || `health ${result.statusCode}`),
+  };
+}
+
 async function syncRegistryForRuntime(rt, registry) {
   const state = rt.stateStore.loadState();
   let instanceStatus = 'UNKNOWN';
   let expireTime = null;
-  let healthy = false;
   let lastError = null;
 
   try {
     const status = await rt.api.getStatus(rt.account.cookie);
     instanceStatus = status.status || 'UNKNOWN';
     expireTime = status.expireTime || null;
-    healthy = instanceStatus === 'AVAILABLE' && !!(state.currentShareUrl || state.currentLocalUrl);
   } catch (e) {
     lastError = e.message;
   }
+
+  const baseUrl = state.currentShareUrl || state.currentLocalUrl || null;
+  const endpointHealth = await computeEndpointHealth(baseUrl);
+  const healthy = instanceStatus === 'AVAILABLE' && endpointHealth.healthy;
 
   registry.upsert({
     accountId: rt.account.id,
     accountName: rt.account.name,
     userId: rt.auth?.userId || null,
     userName: rt.auth?.userName || null,
-    baseUrl: state.currentShareUrl || state.currentLocalUrl || null,
+    baseUrl,
     shareUrl: state.currentShareUrl || null,
     localUrl: state.currentLocalUrl || 'http://127.0.0.1:9200',
     healthy,
@@ -99,7 +106,8 @@ async function syncRegistryForRuntime(rt, registry) {
     deployed: Boolean(state.lastDeployAt),
     deployCount: state.deployCount || 0,
     lastDeployAt: state.lastDeployAt || null,
-    lastError,
+    lastError: lastError || endpointHealth.healthError,
+    lastStatusCode: endpointHealth.healthStatusCode,
   });
 }
 

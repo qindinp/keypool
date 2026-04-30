@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRegistry } from '../controller/registry.mjs';
-import { pickUpstream } from './router.mjs';
+import { pickUpstream, listFallbackUpstreams } from './router.mjs';
 import { proxyJson } from './proxy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -11,6 +11,7 @@ const port = parseInt(process.env.RELAY_PORT || '9300', 10);
 const host = process.env.RELAY_HOST || '127.0.0.1';
 const registryPath = resolve(__dirname, '..', '.manager', 'registry.json');
 const registry = createRegistry(registryPath);
+const MAX_ATTEMPTS = parseInt(process.env.RELAY_MAX_ATTEMPTS || '3', 10);
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2) + '\n';
@@ -30,16 +31,13 @@ function readBody(req) {
   });
 }
 
-async function handleProxy(req, res, path) {
-  const upstream = pickUpstream(registry);
-  if (!upstream) {
-    return sendJson(res, 503, {
-      error: 'no_healthy_upstream',
-      message: '当前没有可用上游，请先运行 manager 完成部署并同步 registry',
-    });
-  }
+function candidateList() {
+  const primary = pickUpstream(registry);
+  if (!primary) return [];
+  return [primary, ...listFallbackUpstreams(registry, [primary.accountId])].slice(0, MAX_ATTEMPTS);
+}
 
-  const body = req.method === 'GET' ? null : await readBody(req);
+async function forwardViaUpstream(upstream, req, path, body) {
   registry.markInflight(upstream.accountId, 1);
   try {
     const result = await proxyJson({
@@ -47,39 +45,62 @@ async function handleProxy(req, res, path) {
       method: req.method,
       path,
       body,
+      headers: {
+        authorization: req.headers.authorization || '',
+      },
     });
 
-    const next = registry.load();
-    const row = (next.upstreams || []).find(u => u.accountId === upstream.accountId);
-    if (row) {
-      row.lastOkAt = Date.now();
-      row.lastStatusCode = result.statusCode;
-      row.healthy = result.statusCode < 500;
-      next.updatedAt = new Date().toISOString();
-      registry.save(next);
+    if (result.statusCode >= 500) {
+      registry.markFailure(upstream.accountId, `upstream ${result.statusCode}`, { statusCode: result.statusCode });
+      return { ok: false, retryable: true, upstream, result };
     }
 
-    res.writeHead(result.statusCode, {
-      'content-type': result.headers['content-type'] || 'application/json; charset=utf-8',
-    });
-    res.end(result.body);
+    registry.markSuccess(upstream.accountId, { lastStatusCode: result.statusCode });
+    return { ok: true, upstream, result };
   } catch (e) {
-    const next = registry.load();
-    const row = (next.upstreams || []).find(u => u.accountId === upstream.accountId);
-    if (row) {
-      row.healthy = false;
-      row.lastError = e.message;
-      next.updatedAt = new Date().toISOString();
-      registry.save(next);
-    }
-    sendJson(res, 502, {
-      error: 'upstream_request_failed',
-      accountId: upstream.accountId,
-      message: e.message,
-    });
+    registry.markFailure(upstream.accountId, e.message);
+    return { ok: false, retryable: true, upstream, error: e };
   } finally {
     registry.markInflight(upstream.accountId, -1);
   }
+}
+
+async function handleProxy(req, res, path) {
+  const upstreams = candidateList();
+  if (upstreams.length === 0) {
+    return sendJson(res, 503, {
+      error: 'no_healthy_upstream',
+      message: '当前没有可用上游，请先运行 manager 完成部署并同步 registry',
+    });
+  }
+
+  const body = req.method === 'GET' ? null : await readBody(req);
+  const attempts = [];
+
+  for (const upstream of upstreams) {
+    const forwarded = await forwardViaUpstream(upstream, req, path, body);
+    if (forwarded.ok) {
+      res.writeHead(forwarded.result.statusCode, {
+        'content-type': forwarded.result.headers['content-type'] || 'application/json; charset=utf-8',
+      });
+      res.end(forwarded.result.body);
+      return;
+    }
+
+    attempts.push({
+      accountId: upstream.accountId,
+      baseUrl: upstream.baseUrl,
+      statusCode: forwarded.result?.statusCode || 0,
+      error: forwarded.error?.message || null,
+    });
+
+    if (!forwarded.retryable) break;
+  }
+
+  return sendJson(res, 502, {
+    error: 'all_upstreams_failed',
+    attempts,
+  });
 }
 
 const server = createServer(async (req, res) => {
