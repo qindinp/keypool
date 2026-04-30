@@ -2,18 +2,55 @@
 
 **OpenAI API Key Pool Proxy** — 把多个 API Key 聚合成一个端点，自动轮转、故障转移、用量追踪。
 
+专为小米 AI Studio 限时实例设计 — **自动续期 + 自动部署**。
+
+## 架构
+
+```
+┌─────────────────────────────────┐
+│  外部持久服务器 (controller.mjs) │  ← Part 2: 监控、续期、部署
+│  自动创建新实例 + 下发部署指令     │
+└──────────────┬──────────────────┘
+               │ WebSocket
+               ▼
+┌─────────────────────────────────┐
+│  AI Studio 限时实例 (server.mjs) │  ← Part 1: KeyPool 代理
+│  每小时轮换，自动部署             │
+│  MIMO_API_KEY → OpenAI 兼容 API  │
+└─────────────────────────────────┘
+```
+
+> 📖 详细部署指南: [DEPLOY.md](./DEPLOY.md)
+
 ## 快速开始
+
+### Part 1: 实例内 (自动部署，无需手动)
+
+```bash
+# 由 Part 2 自动部署，或手动:
+node server.mjs
+# KeyPool 运行在 http://127.0.0.1:9200
+```
+
+### Part 2: 外部持久服务器
 
 ```bash
 # 1. 克隆
-git clone https://github.com/YOUR_USER/keypool.git
+git clone https://github.com/qindinp/keypool.git
 cd keypool
 
-# 2. 启动（自动读取 OpenClaw 配置，无需手动填 key！）
-node server.mjs
+# 2. 设置 Cookie (从浏览器 F12 获取)
+echo "serviceToken=xxx; userId=xxx" > .cookie
 
-# 3. 使用
-# 将你的应用的 OpenAI base URL 指向 KeyPool：
+# 3. 启动控制器
+node controller.mjs
+
+# 它会自动: 监控实例 → 到期前创建新实例 → 部署 KeyPool → 获取新 Key
+```
+
+### 使用 KeyPool
+
+```bash
 export OPENAI_BASE_URL=http://127.0.0.1:9200/v1
 ```
 

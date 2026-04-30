@@ -5,5 +5,7 @@ config.json
 .cookie
 .renew-state.json
 .key-exchange-state.json
+.controller-state.json
+.controller.log
 .tunnel-url
 config.json
