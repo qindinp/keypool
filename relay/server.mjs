@@ -45,6 +45,7 @@ function passthroughHeaders(headers) {
     'x-request-id',
     'transfer-encoding',
     'date',
+    'x-accel-buffering',
   ];
   const next = {};
   for (const key of allow) {
@@ -64,7 +65,32 @@ function isStreamingChatRequest(path, body) {
   }
 }
 
-async function forwardViaUpstream(upstream, req, path, body) {
+function isClientAbortError(error) {
+  const message = error?.message || '';
+  return message.includes('客户端已断开') || message.includes('aborted');
+}
+
+function bindClientAbort(req) {
+  const listeners = new Set();
+  const notify = () => {
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch {
+      }
+    }
+    listeners.clear();
+  };
+
+  req.on('aborted', notify);
+  req.on('close', notify);
+
+  return (listener) => {
+    if (typeof listener === 'function') listeners.add(listener);
+  };
+}
+
+async function forwardViaUpstream(upstream, req, path, body, onAbort) {
   registry.markInflight(upstream.accountId, 1);
   try {
     const result = await proxyJson({
@@ -72,6 +98,7 @@ async function forwardViaUpstream(upstream, req, path, body) {
       method: req.method,
       path,
       body,
+      onAbort,
       headers: {
         authorization: req.headers.authorization || '',
       },
@@ -85,6 +112,9 @@ async function forwardViaUpstream(upstream, req, path, body) {
     registry.markSuccess(upstream.accountId, { lastStatusCode: result.statusCode });
     return { ok: true, upstream, result };
   } catch (e) {
+    if (isClientAbortError(e)) {
+      return { ok: false, retryable: false, upstream, error: e, aborted: true };
+    }
     registry.markFailure(upstream.accountId, e.message);
     return { ok: false, retryable: true, upstream, error: e };
   } finally {
@@ -101,6 +131,7 @@ async function handleStreamProxy(req, res, path, body) {
     });
   }
 
+  const onAbort = bindClientAbort(req);
   const attempts = [];
   for (const upstream of upstreams) {
     registry.markInflight(upstream.accountId, 1);
@@ -111,10 +142,11 @@ async function handleStreamProxy(req, res, path, body) {
         method: req.method,
         path,
         body,
+        onAbort,
         headers: {
           authorization: req.headers.authorization || '',
         },
-        onResponse: async (upstreamRes) => {
+        onResponse: async (upstreamRes, upstreamReq) => {
           const statusCode = upstreamRes.statusCode || 502;
 
           if (statusCode >= 500) {
@@ -133,10 +165,19 @@ async function handleStreamProxy(req, res, path, body) {
           responseStarted = true;
           registry.markSuccess(upstream.accountId, { lastStatusCode: statusCode });
           res.writeHead(statusCode, passthroughHeaders(upstreamRes.headers));
+
+          onAbort(() => {
+            upstreamRes.destroy(new Error('客户端已断开'));
+            upstreamReq.destroy(new Error('客户端已断开'));
+            if (!res.writableEnded) res.end();
+          });
+
           upstreamRes.on('data', chunk => res.write(chunk));
           upstreamRes.on('end', () => res.end());
           upstreamRes.on('error', (error) => {
-            registry.markFailure(upstream.accountId, error.message);
+            if (!isClientAbortError(error)) {
+              registry.markFailure(upstream.accountId, error.message);
+            }
             if (!res.writableEnded) res.end();
           });
         },
@@ -144,6 +185,10 @@ async function handleStreamProxy(req, res, path, body) {
 
       if (responseStarted) return;
     } catch (e) {
+      if (isClientAbortError(e)) {
+        if (!res.writableEnded) res.end();
+        return;
+      }
       registry.markFailure(upstream.accountId, e.message);
       attempts.push({
         accountId: upstream.accountId,
@@ -176,14 +221,20 @@ async function handleProxy(req, res, path) {
     return handleStreamProxy(req, res, path, body);
   }
 
+  const onAbort = bindClientAbort(req);
   const attempts = [];
   for (const upstream of upstreams) {
-    const forwarded = await forwardViaUpstream(upstream, req, path, body);
+    const forwarded = await forwardViaUpstream(upstream, req, path, body, onAbort);
     if (forwarded.ok) {
       res.writeHead(forwarded.result.statusCode, {
         'content-type': forwarded.result.headers['content-type'] || 'application/json; charset=utf-8',
       });
       res.end(forwarded.result.body);
+      return;
+    }
+
+    if (forwarded.aborted) {
+      if (!res.writableEnded) res.end();
       return;
     }
 
@@ -222,13 +273,17 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 200, registry.load());
     }
 
-    if (url.pathname === '/v1/models' || url.pathname === '/v1/chat/completions') {
+    if (
+      url.pathname === '/v1/models' ||
+      url.pathname === '/v1/embeddings' ||
+      url.pathname === '/v1/chat/completions'
+    ) {
       return handleProxy(req, res, url.pathname + url.search);
     }
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: /health /registry /v1/models /v1/chat/completions',
+      message: '支持的路径: /health /registry /v1/models /v1/embeddings /v1/chat/completions',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });

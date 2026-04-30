@@ -34,7 +34,19 @@ function buildRequestOptions(target, method, headers = {}) {
   };
 }
 
-export function proxyJson({ baseUrl, method, path, headers = {}, body, timeoutMs = 60_000 }) {
+function attachAbort(req, onAbort) {
+  if (typeof onAbort !== 'function') return;
+  let active = true;
+  onAbort(() => {
+    if (!active || req.destroyed) return;
+    req.destroy(new Error('客户端已断开'));
+  });
+  req.on('close', () => {
+    active = false;
+  });
+}
+
+export function proxyJson({ baseUrl, method, path, headers = {}, body, timeoutMs = 60_000, onAbort }) {
   const target = new URL(path, normalizeBase(baseUrl));
   const reqImpl = pickImpl(target.protocol);
 
@@ -45,6 +57,7 @@ export function proxyJson({ baseUrl, method, path, headers = {}, body, timeoutMs
       ...headers,
     }), async (res) => resolve(await collectResponse(res)));
 
+    attachAbort(req, onAbort);
     req.on('error', reject);
     req.setTimeout(timeoutMs, () => req.destroy(new Error('上游请求超时')));
     if (body) req.write(body);
@@ -52,7 +65,7 @@ export function proxyJson({ baseUrl, method, path, headers = {}, body, timeoutMs
   });
 }
 
-export function proxyStream({ baseUrl, method, path, headers = {}, body, timeoutMs = 60_000, onResponse }) {
+export function proxyStream({ baseUrl, method, path, headers = {}, body, timeoutMs = 60_000, onResponse, onAbort }) {
   const target = new URL(path, normalizeBase(baseUrl));
   const reqImpl = pickImpl(target.protocol);
 
@@ -66,9 +79,10 @@ export function proxyStream({ baseUrl, method, path, headers = {}, body, timeout
       ...headers,
     }), (upstreamRes) => {
       settled = true;
-      resolve(onResponse(upstreamRes));
+      resolve(onResponse(upstreamRes, req));
     });
 
+    attachAbort(req, onAbort);
     req.on('error', (error) => {
       if (!settled) reject(error);
     });
