@@ -10,6 +10,10 @@
     "controller": "node controller.mjs",
     "controller:once": "node controller.mjs --once",
     "controller:status": "node controller.mjs --status",
+    "manager": "node manager.mjs",
+    "manager:once": "node manager.mjs --once",
+    "manager:status": "node manager.mjs --status",
+    "manager:deploy": "node manager.mjs --deploy",
     "ws": "node ws-client.mjs",
     "probe": "node ws-probe.mjs"
   },
