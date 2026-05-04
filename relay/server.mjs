@@ -2,9 +2,10 @@
 import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createRegistry } from '../controller/registry.mjs';
+import { getAccountsPath } from '../controller/accounts.mjs';
 import { pickUpstream, listFallbackUpstreams } from './router.mjs';
 import { proxyJson, proxyStream } from './proxy.mjs';
 
@@ -18,6 +19,8 @@ const registry = createRegistry(registryPath);
 const MAX_ATTEMPTS = parseInt(process.env.RELAY_MAX_ATTEMPTS || '3', 10);
 const adminHtmlPath = resolve(__dirname, 'admin.html');
 const rootDir = resolve(__dirname, '..');
+const managerDataDir = resolve(rootDir, '.manager');
+const accountsPath = getAccountsPath();
 
 const managerControl = {
   child: null,
@@ -121,6 +124,230 @@ function loadAdminHtml() {
     return readFileSync(adminHtmlPath, 'utf-8');
   }
   return `<!doctype html><meta charset="utf-8"><title>KeyPool Relay Admin</title><body><h1>admin.html missing</h1></body>`;
+}
+
+function safeJsonParse(text, fallback = null) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+function readJsonIfExists(filePath, fallback = null) {
+  if (!existsSync(filePath)) return fallback;
+  try {
+    return safeJsonParse(readFileSync(filePath, 'utf-8'), fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function tailLines(text, limit = 80) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-limit);
+}
+
+function readRecentLogs(limit = 120) {
+  if (!existsSync(managerDataDir)) return [];
+  const files = readdirSync(managerDataDir)
+    .filter(name => name.endsWith('.log'))
+    .sort();
+
+  const lines = [];
+  for (const name of files) {
+    const fullPath = resolve(managerDataDir, name);
+    const fileLines = tailLines(readFileSync(fullPath, 'utf-8'), Math.max(20, Math.floor(limit / Math.max(files.length, 1))));
+    for (const line of fileLines) {
+      lines.push({ file: name, line });
+    }
+  }
+
+  return lines.slice(-limit);
+}
+
+function loadAccountStates() {
+  if (!existsSync(managerDataDir)) return [];
+  const files = readdirSync(managerDataDir)
+    .filter(name => name.endsWith('.state.json'))
+    .sort();
+
+  return files.map((name) => {
+    const fullPath = resolve(managerDataDir, name);
+    const state = readJsonIfExists(fullPath, {});
+    return {
+      file: name,
+      accountId: name.replace(/\.state\.json$/i, ''),
+      currentShareUrl: state?.currentShareUrl || null,
+      currentLocalUrl: state?.currentLocalUrl || null,
+      deployCount: state?.deployCount || 0,
+      lastDeployAt: state?.lastDeployAt || null,
+      lastHealthError: state?.lastHealthError || null,
+      recentRenewals: Array.isArray(state?.renewHistory) ? state.renewHistory.slice(-8).reverse() : [],
+    };
+  });
+}
+
+function parseAccountsFile() {
+  if (!existsSync(accountsPath)) {
+    return { exists: false, raw: { accounts: [] }, list: [] };
+  }
+
+  const raw = readJsonIfExists(accountsPath, { accounts: [] });
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.accounts)
+      ? raw.accounts
+      : [];
+
+  return { exists: true, raw, list };
+}
+
+function sanitizeTags(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map(item => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function maskAccountForClient(raw, index) {
+  const id = String(raw?.id || raw?.name || `account-${index + 1}`);
+  const cookie = typeof raw?.cookie === 'string' ? raw.cookie.trim() : '';
+  const cookieFile = typeof raw?.cookieFile === 'string' ? raw.cookieFile.trim() : '';
+
+  return {
+    id,
+    name: raw?.name || id,
+    enabled: raw?.enabled !== false,
+    priority: Number.isFinite(raw?.priority) ? raw.priority : 100,
+    tags: sanitizeTags(raw?.tags),
+    meta: raw?.meta && typeof raw.meta === 'object' ? raw.meta : {},
+    cookie: '',
+    cookieFile,
+    hasCookie: Boolean(cookie),
+    hasCookieFile: Boolean(cookieFile),
+  };
+}
+
+function loadAccountsConfigForClient() {
+  const parsed = parseAccountsFile();
+  return {
+    path: accountsPath,
+    exists: parsed.exists,
+    accounts: parsed.list.map(maskAccountForClient),
+  };
+}
+
+function buildStoredAccount(input, index, previousById) {
+  const id = String(input?.id || input?.name || `account-${index + 1}`).trim();
+  if (!id) {
+    throw new Error(`第 ${index + 1} 个账号缺少 id`);
+  }
+
+  const previous = previousById.get(id) || {};
+  const cookie = typeof input?.cookie === 'string' ? input.cookie.trim() : '';
+  const cookieFile = typeof input?.cookieFile === 'string' ? input.cookieFile.trim() : '';
+
+  const stored = {
+    id,
+    name: String(input?.name || id).trim() || id,
+    enabled: input?.enabled !== false,
+    priority: Number.isFinite(Number(input?.priority)) ? Number(input.priority) : 100,
+    tags: sanitizeTags(input?.tags),
+  };
+
+  const meta = input?.meta && typeof input.meta === 'object'
+    ? input.meta
+    : previous?.meta && typeof previous.meta === 'object'
+      ? previous.meta
+      : undefined;
+  if (meta && Object.keys(meta).length > 0) {
+    stored.meta = meta;
+  }
+
+  if (cookie) stored.cookie = cookie;
+  else if (typeof previous?.cookie === 'string' && previous.cookie.trim()) stored.cookie = previous.cookie.trim();
+
+  if (cookieFile) stored.cookieFile = cookieFile;
+  else if (typeof previous?.cookieFile === 'string' && previous.cookieFile.trim()) stored.cookieFile = previous.cookieFile.trim();
+
+  if (!stored.cookie && !stored.cookieFile) {
+    throw new Error(`账号 ${id} 缺少 cookie 或 cookieFile`);
+  }
+
+  return stored;
+}
+
+function saveAccountsConfigFromClient(payload) {
+  const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
+  const parsed = parseAccountsFile();
+  const previousById = new Map(
+    parsed.list.map((item, index) => [String(item?.id || item?.name || `account-${index + 1}`), item])
+  );
+  const seen = new Set();
+
+  const storedAccounts = accounts.map((item, index) => {
+    const normalized = buildStoredAccount(item, index, previousById);
+    if (seen.has(normalized.id)) {
+      throw new Error(`账号 id 重复: ${normalized.id}`);
+    }
+    seen.add(normalized.id);
+    return normalized;
+  });
+
+  mkdirSync(dirname(accountsPath), { recursive: true });
+  writeFileSync(accountsPath, JSON.stringify({ accounts: storedAccounts }, null, 2) + '\n', 'utf-8');
+
+  return {
+    ok: true,
+    path: accountsPath,
+    exists: true,
+    count: storedAccounts.length,
+    accounts: storedAccounts.map(maskAccountForClient),
+  };
+}
+
+function buildOverview() {
+  const registryData = registry.load();
+  const upstreams = Array.isArray(registryData.upstreams) ? registryData.upstreams : [];
+  const healthyUpstreams = upstreams.filter((u) => u.healthy === true);
+  const missingShareUrl = upstreams.filter((u) => !u.shareUrl).length;
+  const availableInstances = upstreams.filter((u) => u.instanceStatus === 'AVAILABLE').length;
+  const degradedUpstreams = upstreams.filter((u) => !u.healthy && u.instanceStatus === 'AVAILABLE').length;
+  const states = loadAccountStates();
+  const accountsConfig = loadAccountsConfigForClient();
+
+  return {
+    generatedAt: new Date().toISOString(),
+    manager: managerStatus(),
+    relay: {
+      host,
+      port,
+      baseUrl: `http://${host}:${port}`,
+      accessUrl: `http://${host}:${port}/v1`,
+      adminUrl: `http://${host}:${port}/admin`,
+    },
+    summary: {
+      totalUpstreams: upstreams.length,
+      healthyUpstreams: healthyUpstreams.length,
+      availableInstances,
+      degradedUpstreams,
+      missingShareUrl,
+      primaryAccountName: upstreams[0]?.accountName || upstreams[0]?.accountId || null,
+      updatedAt: registryData.updatedAt || null,
+      configuredAccounts: accountsConfig.accounts.length,
+      accountsConfigExists: accountsConfig.exists,
+    },
+    accounts: accountsConfig,
+    registry: registryData,
+    states,
+    logs: readRecentLogs(160),
+  };
 }
 
 function readBody(req) {
@@ -375,6 +602,45 @@ async function handleControlApi(req, res, url) {
   return sendJson(res, 404, { error: 'not_found', message: '支持的控制路径: /api/control/status /api/control/start /api/control/stop /api/control/retry' });
 }
 
+async function handleAdminApi(req, res, url) {
+  if (url.pathname === '/api/admin/overview' && req.method === 'GET') {
+    return sendJson(res, 200, buildOverview());
+  }
+
+  if (url.pathname === '/api/admin/logs' && req.method === 'GET') {
+    const requested = Number(url.searchParams.get('limit') || 120);
+    const limit = Math.max(20, Math.min(500, requested || 120));
+    return sendJson(res, 200, {
+      generatedAt: new Date().toISOString(),
+      lines: readRecentLogs(limit),
+    });
+  }
+
+  if (url.pathname === '/api/admin/accounts' && req.method === 'GET') {
+    return sendJson(res, 200, loadAccountsConfigForClient());
+  }
+
+  if (url.pathname === '/api/admin/accounts' && (req.method === 'POST' || req.method === 'PUT')) {
+    const body = await readBody(req);
+    const payload = safeJsonParse(body, null);
+    if (!payload || typeof payload !== 'object') {
+      return sendJson(res, 400, { error: 'invalid_json', message: '请求体必须是 JSON 对象' });
+    }
+
+    const saved = saveAccountsConfigFromClient(payload);
+    const shouldRestartManager = payload.restartManager === true;
+    const manager = shouldRestartManager ? await restartManagerProcess() : managerStatus();
+
+    return sendJson(res, 200, {
+      ...saved,
+      restartedManager: shouldRestartManager,
+      manager,
+    });
+  }
+
+  return sendJson(res, 404, { error: 'not_found', message: '支持的管理路径: /api/admin/overview /api/admin/logs /api/admin/accounts' });
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -385,6 +651,10 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname.startsWith('/api/control/')) {
       return handleControlApi(req, res, url);
+    }
+
+    if (url.pathname.startsWith('/api/admin/')) {
+      return await handleAdminApi(req, res, url);
     }
 
     if (url.pathname === '/health') {
@@ -412,7 +682,7 @@ const server = createServer(async (req, res) => {
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /health /registry /v1/models /v1/embeddings /v1/chat/completions',
+      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/admin/overview /api/admin/logs /api/admin/accounts /health /registry /v1/models /v1/embeddings /v1/chat/completions',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });

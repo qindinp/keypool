@@ -3,203 +3,105 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>KeyPool 控制台</title>
+  <title>KeyPool 图形化控制台</title>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b1020;
-      --panel: #121a31;
-      --panel-2: #192444;
+      --bg: #09101f;
+      --bg2: #101a33;
+      --panel: rgba(18, 26, 49, .96);
+      --panel2: rgba(25, 36, 68, .98);
+      --line: #2a365f;
       --text: #e9eefc;
       --muted: #93a1c6;
       --ok: #25c281;
       --warn: #f5b942;
       --bad: #ff6b6b;
-      --line: #2a365f;
-      --chip: #233158;
-      --shadow: 0 16px 40px rgba(0, 0, 0, .25);
+      --blue: #5b9dff;
+      --chip: #223159;
+      --shadow: 0 16px 40px rgba(0,0,0,.25);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: linear-gradient(180deg, #09101f 0%, #0f1730 100%);
       color: var(--text);
+      background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
     }
-    .wrap {
-      max-width: 1240px;
-      margin: 0 auto;
-      padding: 24px;
-    }
-    .hero {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: flex-start;
-      margin-bottom: 18px;
-    }
-    h1 { margin: 0 0 8px; font-size: 30px; }
-    .sub { color: var(--muted); }
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: flex-end;
-    }
-    button, select {
+    .wrap { max-width: 1440px; margin: 0 auto; padding: 24px; }
+    .hero { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; margin-bottom: 18px; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    h2 { margin: 0; font-size: 18px; }
+    h3 { margin: 0 0 12px; font-size: 16px; }
+    .sub, .muted { color: var(--muted); }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button, select, input, textarea {
       border: 1px solid var(--line);
-      background: var(--panel-2);
+      background: var(--panel2);
       color: var(--text);
-      border-radius: 10px;
+      border-radius: 12px;
       padding: 10px 14px;
-      cursor: pointer;
     }
+    button { cursor: pointer; }
+    textarea { min-height: 92px; resize: vertical; }
     button:hover { filter: brightness(1.08); }
-    .primary-btn {
-      background: linear-gradient(135deg, #2b7fff, #5b9dff);
-      border-color: rgba(255,255,255,.08);
-      color: white;
-    }
-    .danger-btn {
-      background: linear-gradient(135deg, #b83e4b, #db5e6a);
-      border-color: rgba(255,255,255,.08);
-      color: white;
-    }
-    .secondary-btn {
-      background: rgba(255,255,255,.04);
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 14px;
-      margin: 14px 0 22px;
-    }
-    .card {
-      background: rgba(18, 26, 49, .96);
-      border: 1px solid var(--line);
-      box-shadow: var(--shadow);
-      border-radius: 16px;
-      padding: 16px;
-    }
+    .primary-btn { background: linear-gradient(135deg, #2b7fff, #5b9dff); color: #fff; }
+    .danger-btn { background: linear-gradient(135deg, #b83e4b, #db5e6a); color: #fff; }
+    .secondary-btn { background: rgba(255,255,255,.04); }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 16px; }
+    .address-box { display:flex; justify-content:space-between; gap:14px; align-items:center; border: 1px solid var(--line); background: rgba(255,255,255,.04); border-radius: 16px; padding: 14px 16px; margin-top: 12px; }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { color: #cfe2ff; font-size: 16px; word-break: break-all; }
+    .grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:14px; margin: 14px 0 22px; }
     .metric-label { color: var(--muted); font-size: 12px; }
     .metric-value { font-size: 28px; font-weight: 700; margin-top: 6px; }
-    .section-title {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin: 18px 0 10px;
-    }
-    .section-title h2 { margin: 0; font-size: 18px; }
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,.03);
-      color: var(--muted);
-    }
+    .status { display:inline-flex; align-items:center; gap:8px; border-radius:999px; padding:6px 10px; border:1px solid var(--line); background: rgba(255,255,255,.03); color: var(--muted); }
     .dot { width: 10px; height: 10px; border-radius: 999px; background: var(--muted); }
     .dot.ok { background: var(--ok); }
     .dot.warn { background: var(--warn); }
     .dot.bad { background: var(--bad); }
-    .big-address {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 14px 16px;
-      border-radius: 14px;
-      background: rgba(255,255,255,.04);
-      border: 1px solid var(--line);
-      margin-top: 12px;
-    }
-    .big-address code {
-      font-size: 16px;
-      color: #cfe2ff;
-      word-break: break-all;
-    }
-    .tip {
-      color: var(--muted);
-      font-size: 13px;
-      margin-top: 10px;
-    }
-    .list {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-      gap: 14px;
-    }
-    .upstream-card {
-      background: rgba(18, 26, 49, .96);
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 16px;
-      box-shadow: var(--shadow);
-    }
-    .row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 12px;
-    }
+    .section-title { display:flex; justify-content:space-between; gap:12px; align-items:center; margin: 18px 0 10px; }
+    .two-col { display:grid; grid-template-columns: 2fr 1fr; gap:14px; }
+    .list { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:14px; }
+    .upstream-card, .account-editor-card { background: var(--panel); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow: var(--shadow); }
+    .row { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom: 12px; }
     .name { font-size: 18px; font-weight: 700; }
-    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
-    .chip {
-      background: var(--chip);
-      border: 1px solid var(--line);
-      color: var(--text);
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 12px;
-    }
-    .kv {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 8px 10px;
-      font-size: 13px;
-      margin-top: 10px;
-    }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 14px; }
+    .chip { background: var(--chip); border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:12px; }
+    .kv { display:grid; grid-template-columns: 120px 1fr; gap:8px 10px; font-size:13px; }
     .kv .k { color: var(--muted); }
     .kv .v { word-break: break-all; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .error-box {
-      white-space: pre-wrap;
-      background: rgba(255, 107, 107, .08);
-      border: 1px solid rgba(255, 107, 107, .25);
-      border-radius: 12px;
-      padding: 12px;
-      color: #ffd1d1;
-    }
-    details.advanced {
-      margin-top: 18px;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: rgba(18, 26, 49, .85);
-      overflow: hidden;
-    }
-    details.advanced > summary {
-      cursor: pointer;
-      list-style: none;
-      padding: 16px;
-      font-weight: 600;
-    }
-    details.advanced > summary::-webkit-details-marker { display: none; }
-    .advanced-inner { padding: 0 16px 16px; }
-    .footer { color: var(--muted); margin-top: 18px; font-size: 12px; }
+    .timeline { display:flex; flex-direction:column; gap:10px; }
+    .timeline-item { border-left: 3px solid var(--line); padding: 8px 0 8px 12px; background: rgba(255,255,255,.02); border-radius: 10px; }
+    .timeline-item.ok { border-left-color: var(--ok); }
+    .timeline-item.warn { border-left-color: var(--warn); }
+    .timeline-item.bad { border-left-color: var(--bad); }
+    .log-box { max-height: 420px; overflow:auto; background:#08101d; border:1px solid var(--line); border-radius:14px; padding:12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+    .log-line { white-space: pre-wrap; word-break: break-word; padding: 4px 0; border-bottom: 1px dashed rgba(255,255,255,.06); }
+    .log-file { color: #8fc6ff; margin-right: 8px; }
+    .tip { color: var(--muted); font-size: 13px; margin-top: 8px; }
+    .empty { color: var(--muted); padding: 18px; border:1px dashed var(--line); border-radius:14px; }
+    .accounts-layout { display:grid; grid-template-columns: 2fr 1fr; gap:14px; }
+    .account-editor-list { display:grid; gap:12px; }
+    .form-grid { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:10px; }
+    .field { display:flex; flex-direction:column; gap:6px; }
+    .field label { color: var(--muted); font-size: 12px; }
+    .field.full { grid-column: 1 / -1; }
+    .toggle-row { display:flex; align-items:center; gap:8px; }
+    .toggle-row input { width: auto; }
+    .inline-actions { display:flex; flex-wrap:wrap; gap:10px; }
+    .banner { margin-top: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); }
+    .banner.ok { background: rgba(37,194,129,.12); border-color: rgba(37,194,129,.35); }
+    .banner.bad { background: rgba(255,107,107,.12); border-color: rgba(255,107,107,.35); }
     a { color: #8fc6ff; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    @media (max-width: 900px) {
-      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .hero { flex-direction: column; }
-      .toolbar { justify-content: flex-start; }
-      .big-address { flex-direction: column; align-items: flex-start; }
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .hero, .two-col, .accounts-layout { display:grid; grid-template-columns: 1fr; }
+      .address-box { flex-direction: column; align-items:flex-start; }
     }
-    @media (max-width: 600px) {
-      .grid { grid-template-columns: 1fr; }
-      .list { grid-template-columns: 1fr; }
+    @media (max-width: 700px) {
+      .grid, .list, .form-grid { grid-template-columns: 1fr; }
       .kv { grid-template-columns: 1fr; }
     }
   </style>
@@ -208,9 +110,9 @@
   <div class="wrap">
     <div class="hero">
       <div>
-        <h1>KeyPool 控制台</h1>
-        <div class="sub">你只需要看服务是否可用，然后复制接入地址即可。</div>
-        <div class="big-address">
+        <h1>KeyPool 图形化控制台</h1>
+        <div class="sub">不仅能看状态，还能直接管理账号配置、保存并让后台生效。</div>
+        <div class="address-box">
           <div>
             <div class="metric-label">推荐接入地址</div>
             <code id="accessUrl">http://127.0.0.1:9300/v1</code>
@@ -239,53 +141,78 @@
     </div>
 
     <div class="grid">
+      <div class="card"><div class="metric-label">服务状态</div><div class="metric-value" id="serviceStatus">检查中</div></div>
+      <div class="card"><div class="metric-label">后台任务</div><div class="metric-value" id="managerStatus">检查中</div></div>
+      <div class="card"><div class="metric-label">已配置账号</div><div class="metric-value" id="configuredAccounts">-</div></div>
+      <div class="card"><div class="metric-label">健康连接</div><div class="metric-value" id="healthyCount">-</div></div>
+      <div class="card"><div class="metric-label">异常连接</div><div class="metric-value" id="degradedCount">-</div></div>
+      <div class="card"><div class="metric-label">缺失分享地址</div><div class="metric-value" id="missingShareUrlCount">-</div></div>
+    </div>
+
+    <div class="section-title">
+      <h2>账号管理</h2>
+      <div class="toolbar">
+        <button id="addAccountBtn" class="secondary-btn">新增账号</button>
+        <button id="saveAccountsBtn" class="primary-btn">保存账号配置</button>
+      </div>
+    </div>
+    <div class="accounts-layout">
       <div class="card">
-        <div class="metric-label">服务状态</div>
-        <div class="metric-value" id="serviceStatus">检查中</div>
+        <div id="accountsBanner"></div>
+        <div id="accountEditorList" class="account-editor-list"></div>
       </div>
       <div class="card">
-        <div class="metric-label">后台任务</div>
-        <div class="metric-value" id="managerStatus">检查中</div>
+        <h3>使用说明</h3>
+        <div class="tip">这里维护的是 <span class="mono" id="accountsPath">accounts.json</span>。</div>
+        <div class="tip">保存时会：</div>
+        <div class="tip">1. 写入账号配置</div>
+        <div class="tip">2. 自动重启 manager</div>
+        <div class="tip">3. 让新账号/新 Cookie 立即生效</div>
+        <div class="tip">支持两种方式：</div>
+        <div class="tip">- 直接填写 cookie</div>
+        <div class="tip">- 填写 cookieFile（相对项目目录）</div>
+        <div class="tip">如果你不想在页面显示旧 cookie，系统会保留已有值；只有你重新填写时才会覆盖。</div>
       </div>
+    </div>
+
+    <div class="two-col">
       <div class="card">
-        <div class="metric-label">可用连接</div>
-        <div class="metric-value" id="healthyCount">-</div>
+        <div class="section-title">
+          <h2>当前总览</h2>
+          <div class="status"><span class="dot" id="relayDot"></span><span id="relayText">检查中...</span></div>
+        </div>
+        <div class="kv">
+          <div class="k">管理页</div><div class="v mono"><a href="/admin" target="_blank">/admin</a></div>
+          <div class="k">模型接口</div><div class="v mono"><a href="/v1/models" target="_blank">/v1/models</a></div>
+          <div class="k">健康检查</div><div class="v mono"><a href="/health" target="_blank">/health</a></div>
+          <div class="k">原始状态</div><div class="v mono"><a href="/registry" target="_blank">/registry</a></div>
+          <div class="k">当前主节点</div><div class="v" id="primaryName">-</div>
+          <div class="k">最近同步</div><div class="v" id="updatedAt">-</div>
+          <div class="k">控制提示</div><div class="v" id="controlTip">-</div>
+        </div>
       </div>
+
       <div class="card">
-        <div class="metric-label">当前使用节点</div>
-        <div class="metric-value" id="primaryName" style="font-size:22px">-</div>
+        <div class="section-title"><h2>最近恢复记录</h2><div class="muted" id="renewMeta">-</div></div>
+        <div id="renewTimeline" class="timeline"></div>
       </div>
     </div>
 
     <div class="section-title">
-      <h2>当前状态</h2>
-      <div class="status"><span class="dot" id="relayDot"></span><span id="relayText">检查中...</span></div>
+      <h2>实例卡片</h2>
+      <div class="muted" id="listMeta">-</div>
+    </div>
+    <div id="upstreamList" class="list"></div>
+
+    <div class="section-title">
+      <h2>最近日志</h2>
+      <div class="toolbar">
+        <button id="copyLogsBtn" class="secondary-btn">复制日志</button>
+      </div>
     </div>
     <div class="card">
-      <div class="kv">
-        <div class="k">服务地址</div><div class="v mono"><a id="rootLink" href="/admin" target="_blank">/admin</a></div>
-        <div class="k">模型接口</div><div class="v mono"><a id="modelsLink" href="/v1/models" target="_blank">/v1/models</a></div>
-        <div class="k">健康检查</div><div class="v mono"><a id="healthLink" href="/health" target="_blank">/health</a></div>
-        <div class="k">原始状态</div><div class="v mono"><a id="registryLink" href="/registry" target="_blank">/registry</a></div>
-      </div>
-      <div class="tip">如果服务状态是绿色，通常你就可以直接使用上面的接入地址了。</div>
-      <div class="tip" id="controlTip">你可以在这里启动、停止或重试后台同步服务。</div>
-    </div>
-
-    <details class="advanced">
-      <summary>高级信息（调试时再看）</summary>
-      <div class="advanced-inner">
-        <div class="section-title">
-          <h2>连接节点</h2>
-          <div class="sub" id="listMeta">-</div>
-        </div>
-        <div id="errorBox" class="error-box" style="display:none"></div>
-        <div id="upstreamList" class="list"></div>
-      </div>
-    </details>
-
-    <div class="footer">
-      普通使用者只需要：启动服务 → 确认状态正常 → 复制接入地址 → 粘贴到你的客户端。
+      <div id="logBox" class="log-box"></div>
+      <div class="tip">这里只显示最近日志片段，足够判断是在等 tunnel、在恢复，还是已经拿到 shareUrl。</div>
     </div>
   </div>
 
@@ -294,6 +221,10 @@
     const state = {
       timer: null,
       intervalMs: 10000,
+      lastLogsText: '',
+      accounts: [],
+      accountsPath: '',
+      dirty: false,
     };
 
     function fmtTime(value) {
@@ -302,7 +233,6 @@
       if (Number.isNaN(d.getTime())) return String(value);
       return d.toLocaleString('zh-CN', { hour12: false });
     }
-
     function fmtRelative(value) {
       if (!value) return '-';
       const time = new Date(value).getTime();
@@ -317,7 +247,6 @@
       const days = Math.round(hours / 24);
       return diff >= 0 ? `${days} 天后` : `${days} 天前`;
     }
-
     function escapeHtml(text) {
       return String(text ?? '')
         .replace(/&/g, '&amp;')
@@ -326,14 +255,26 @@
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
     }
-
     function statusBadge(u) {
       if (u.healthy === true) return { cls: 'ok', text: '可用' };
+      if (u.instanceStatus === 'AVAILABLE' && !u.shareUrl) return { cls: 'warn', text: '缺少分享地址' };
       if (u.instanceStatus === 'AVAILABLE') return { cls: 'warn', text: '恢复中' };
       return { cls: 'bad', text: u.instanceStatus || '异常' };
     }
-
-    function renderUpstreamCard(u) {
+    function renewalBadge(item) {
+      if (item?.success && item?.shareUrl) return 'ok';
+      if (item?.success) return 'warn';
+      return 'bad';
+    }
+    function showAccountsBanner(message, kind = 'ok') {
+      const box = $('accountsBanner');
+      if (!message) {
+        box.innerHTML = '';
+        return;
+      }
+      box.innerHTML = `<div class="banner ${kind}">${escapeHtml(message)}</div>`;
+    }
+    function renderUpstreamCard(u, linkedState) {
       const badge = statusBadge(u);
       const cooldown = u.cooldownUntil ? `${fmtTime(u.cooldownUntil)}（${fmtRelative(u.cooldownUntil)}）` : '-';
       const expire = u.expireTime ? `${fmtTime(u.expireTime)}（${fmtRelative(u.expireTime)}）` : '-';
@@ -352,7 +293,7 @@
             <span class="chip">优先级: ${escapeHtml(u.priority ?? '-')}</span>
             <span class="chip">并发中: ${escapeHtml(u.inflight ?? 0)}</span>
             <span class="chip">部署次数: ${escapeHtml(u.deployCount ?? 0)}</span>
-            <span class="chip">异常次数: ${escapeHtml(u.failureCount ?? 0)}</span>
+            <span class="chip">错误次数: ${escapeHtml(u.failureCount ?? 0)}</span>
             <span class="chip">状态码: ${escapeHtml(u.lastStatusCode ?? 0)}</span>
             ${tags.map(tag => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}
           </div>
@@ -365,13 +306,131 @@
             <div class="k">上次部署</div><div class="v">${escapeHtml(lastDeploy)}</div>
             <div class="k">恢复等待</div><div class="v">${escapeHtml(cooldown)}</div>
             <div class="k">最近成功</div><div class="v">${escapeHtml(fmtTime(u.lastOkAt))}</div>
-            <div class="k">最近错误</div><div class="v">${escapeHtml(u.lastError || '-')}</div>
-            <div class="k">错误时间</div><div class="v">${escapeHtml(fmtTime(u.lastErrorAt))}</div>
+            <div class="k">最近错误</div><div class="v">${escapeHtml(u.lastError || linkedState?.lastHealthError || '-')}</div>
+            <div class="k">状态文件</div><div class="v mono">${escapeHtml(linkedState?.file || '-')}</div>
+          </div>
+        </div>`;
+    }
+    function renderRenewItem(item) {
+      const cls = renewalBadge(item);
+      return `
+        <div class="timeline-item ${cls}">
+          <div><strong>${escapeHtml(item.reason || 'unknown')}</strong></div>
+          <div class="muted">${escapeHtml(fmtTime(item.at))}</div>
+          <div>结果：${item.success ? '成功' : '失败'}</div>
+          <div class="mono">shareUrl: ${escapeHtml(item.shareUrl || '未获取到')}</div>
+          <div class="mono">localUrl: ${escapeHtml(item.localUrl || '-')}</div>
+        </div>`;
+    }
+    function accountTemplate(index) {
+      return {
+        id: `account-${index + 1}`,
+        name: `账号 ${index + 1}`,
+        enabled: true,
+        priority: 100 + index,
+        tags: [],
+        cookie: '',
+        cookieFile: '',
+        hasCookie: false,
+        hasCookieFile: false,
+      };
+    }
+    function renderAccountEditor() {
+      const list = $('accountEditorList');
+      if (!state.accounts.length) {
+        list.innerHTML = '<div class="empty">还没有账号。点击“新增账号”创建第一个账号。</div>';
+        return;
+      }
+      list.innerHTML = state.accounts.map((acc, index) => `
+        <div class="account-editor-card" data-account-index="${index}">
+          <div class="row">
+            <div>
+              <div class="name">${escapeHtml(acc.name || acc.id || `账号 ${index + 1}`)}</div>
+              <div class="sub mono">${escapeHtml(acc.id || '-')}</div>
+            </div>
+            <div class="inline-actions">
+              <button class="secondary-btn" data-action="clone" data-index="${index}">复制一份</button>
+              <button class="danger-btn" data-action="remove" data-index="${index}">删除</button>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>账号 ID</label>
+              <input data-field="id" data-index="${index}" value="${escapeHtml(acc.id || '')}" />
+            </div>
+            <div class="field">
+              <label>显示名称</label>
+              <input data-field="name" data-index="${index}" value="${escapeHtml(acc.name || '')}" />
+            </div>
+            <div class="field">
+              <label>优先级</label>
+              <input type="number" data-field="priority" data-index="${index}" value="${escapeHtml(acc.priority ?? 100)}" />
+            </div>
+            <div class="field">
+              <label>标签（逗号分隔）</label>
+              <input data-field="tags" data-index="${index}" value="${escapeHtml((acc.tags || []).join(', '))}" />
+            </div>
+            <div class="field full">
+              <label>Cookie（留空 = 保留旧值；新增账号则必须填 cookie 或 cookieFile）</label>
+              <textarea data-field="cookie" data-index="${index}" placeholder="如果该账号以前已保存过 cookie，这里留空不会清掉旧值。"></textarea>
+              <div class="tip">当前状态：${acc.hasCookie ? '已保存 cookie（为了安全不回显）' : '未保存 cookie'}</div>
+            </div>
+            <div class="field full">
+              <label>Cookie 文件路径（相对 keypool 项目目录）</label>
+              <input data-field="cookieFile" data-index="${index}" value="${escapeHtml(acc.cookieFile || '')}" placeholder="例如 cookies/account-a.txt" />
+              <div class="tip">当前状态：${acc.hasCookieFile ? `已设置 cookieFile：${escapeHtml(acc.cookieFile)}` : '未设置 cookieFile'}</div>
+            </div>
+            <div class="field full">
+              <label class="toggle-row"><input type="checkbox" data-field="enabled" data-index="${index}" ${acc.enabled !== false ? 'checked' : ''} /> 启用这个账号</label>
+            </div>
           </div>
         </div>
-      `;
+      `).join('');
     }
-
+    function collectAccountsFromDom() {
+      return state.accounts.map((acc, index) => {
+        const get = (field) => document.querySelector(`[data-field="${field}"][data-index="${index}"]`);
+        return {
+          ...acc,
+          id: get('id')?.value?.trim() || '',
+          name: get('name')?.value?.trim() || '',
+          priority: Number(get('priority')?.value || 100),
+          tags: (get('tags')?.value || '').split(',').map(s => s.trim()).filter(Boolean),
+          cookie: get('cookie')?.value?.trim() || '',
+          cookieFile: get('cookieFile')?.value?.trim() || '',
+          enabled: Boolean(get('enabled')?.checked),
+        };
+      });
+    }
+    function bindAccountEditorEvents() {
+      $('accountEditorList').addEventListener('input', () => { state.dirty = true; showAccountsBanner('账号配置有未保存修改。', 'ok'); });
+      $('accountEditorList').addEventListener('click', (event) => {
+        const target = event.target;
+        const action = target?.dataset?.action;
+        const index = Number(target?.dataset?.index);
+        if (!action || !Number.isFinite(index)) return;
+        const current = collectAccountsFromDom();
+        state.accounts = current;
+        if (action === 'remove') {
+          state.accounts.splice(index, 1);
+          state.dirty = true;
+          renderAccountEditor();
+          showAccountsBanner('已删除一条账号草稿，记得保存。', 'ok');
+          return;
+        }
+        if (action === 'clone') {
+          const source = { ...state.accounts[index] };
+          source.id = `${source.id || 'account'}-copy`;
+          source.name = `${source.name || source.id || '账号'} 副本`;
+          source.cookie = '';
+          source.hasCookie = source.hasCookie;
+          state.accounts.splice(index + 1, 0, source);
+          state.dirty = true;
+          renderAccountEditor();
+          showAccountsBanner('已复制账号草稿，新的副本需要你确认 ID。', 'ok');
+        }
+      });
+    }
     async function fetchJson(url) {
       const res = await fetch(url, { cache: 'no-store' });
       const text = await res.text();
@@ -379,24 +438,22 @@
       try { body = text ? JSON.parse(text) : null; } catch {}
       return { ok: res.ok, status: res.status, body, text };
     }
-
-    async function postJson(url) {
-      const res = await fetch(url, { method: 'POST', cache: 'no-store' });
+    async function postJson(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: body ? JSON.stringify(body) : null,
+      });
       const text = await res.text();
-      let body = null;
-      try { body = text ? JSON.parse(text) : null; } catch {}
-      return { ok: res.ok, status: res.status, body, text };
+      let payload = null;
+      try { payload = text ? JSON.parse(text) : null; } catch {}
+      return { ok: res.ok, status: res.status, body: payload, text };
     }
-
     async function copyText(text, successText) {
-      try {
-        await navigator.clipboard.writeText(text);
-        alert(successText);
-      } catch {
-        alert(`复制失败，请手动复制：\n${text}`);
-      }
+      try { await navigator.clipboard.writeText(text); alert(successText); }
+      catch { alert(`复制失败，请手动复制：\n${text}`); }
     }
-
     function applyAutoRefresh() {
       if (state.timer) clearInterval(state.timer);
       state.timer = null;
@@ -405,18 +462,45 @@
       $('autoDot').className = `dot ${enabled ? 'ok' : 'warn'}`;
       if (enabled) state.timer = setInterval(refreshAll, state.intervalMs);
     }
-
+    async function loadAccountsForEditor(force = false) {
+      if (state.dirty && !force) return;
+      const result = await fetchJson('/api/admin/accounts');
+      if (!result.ok || !result.body) {
+        showAccountsBanner(`读取账号配置失败：HTTP ${result.status}`, 'bad');
+        return;
+      }
+      state.accounts = Array.isArray(result.body.accounts) ? result.body.accounts : [];
+      state.accountsPath = result.body.path || '';
+      $('accountsPath').textContent = state.accountsPath || 'accounts.json';
+      state.dirty = false;
+      renderAccountEditor();
+      showAccountsBanner(result.body.exists ? '已加载当前账号配置。' : '当前还没有 accounts.json，保存时会自动创建。', 'ok');
+    }
+    async function saveAccounts() {
+      const accounts = collectAccountsFromDom();
+      const result = await postJson('/api/admin/accounts', { accounts, restartManager: true });
+      if (!result.ok || !result.body) {
+        const message = result.body?.message || result.text || `HTTP ${result.status}`;
+        showAccountsBanner(`保存失败：${message}`, 'bad');
+        return;
+      }
+      state.accounts = Array.isArray(result.body.accounts) ? result.body.accounts : accounts;
+      state.accountsPath = result.body.path || state.accountsPath;
+      $('accountsPath').textContent = state.accountsPath || 'accounts.json';
+      state.dirty = false;
+      renderAccountEditor();
+      showAccountsBanner(`保存成功，已写入 ${result.body.count} 个账号，并自动重启 manager。`, 'ok');
+      await refreshAll();
+    }
     async function refreshAll() {
       const origin = window.location.origin;
       const accessUrl = `${origin}/v1`;
       $('accessUrl').textContent = accessUrl;
-
-      const [health, registry, control] = await Promise.all([
+      const [health, overview, control] = await Promise.all([
         fetchJson('/health'),
-        fetchJson('/registry'),
-        fetchJson('/api/control/status'),
+        fetchJson('/api/admin/overview'),
+        fetchJson('/api/control/status')
       ]);
-
       $('relayDot').className = `dot ${health.ok ? 'ok' : 'bad'}`;
       $('relayText').textContent = health.ok
         ? `服务正常（可用连接 ${health.body?.healthyUpstreams ?? 0}）`
@@ -427,72 +511,84 @@
         ? `后台同步正在运行（PID ${control.body?.pid ?? '-'}）`
         : '后台同步当前未运行，可点击“启动”或“重试”';
 
-      if (!registry.ok || !registry.body) {
-        $('errorBox').style.display = 'block';
-        $('errorBox').textContent = `读取 /registry 失败\nHTTP ${registry.status}\n${registry.text || ''}`;
-        $('upstreamList').innerHTML = '';
+      if (!overview.ok || !overview.body) {
+        $('configuredAccounts').textContent = '0';
         $('healthyCount').textContent = '0';
-        $('updatedAt').textContent = '-';
+        $('degradedCount').textContent = '0';
+        $('missingShareUrlCount').textContent = '0';
         $('primaryName').textContent = '-';
+        $('updatedAt').textContent = '-';
+        $('listMeta').textContent = '读取总览失败';
+        $('upstreamList').innerHTML = `<div class="empty">读取 /api/admin/overview 失败：HTTP ${overview.status}</div>`;
+        $('renewTimeline').innerHTML = '<div class="empty">暂无恢复记录</div>';
+        $('logBox').innerHTML = '';
         return;
       }
 
-      $('errorBox').style.display = 'none';
-      const data = registry.body;
-      const upstreams = Array.isArray(data.upstreams) ? [...data.upstreams] : [];
-      upstreams.sort((a, b) => {
-        const priority = (a.priority ?? 999) - (b.priority ?? 999);
-        if (priority !== 0) return priority;
-        return (a.inflight ?? 0) - (b.inflight ?? 0);
-      });
+      const data = overview.body;
+      const upstreams = Array.isArray(data.registry?.upstreams) ? [...data.registry.upstreams] : [];
+      const states = Array.isArray(data.states) ? data.states : [];
+      const stateMap = new Map(states.map(s => [s.accountId, s]));
+      upstreams.sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
 
-      const healthyCount = upstreams.filter(u => u.healthy).length;
-      $('healthyCount').textContent = String(healthyCount);
-      $('updatedAt').textContent = fmtTime(data.updatedAt);
-      $('primaryName').textContent = upstreams[0]?.accountName || upstreams[0]?.accountId || '-';
-      $('listMeta').textContent = `共 ${upstreams.length} 个连接节点，已按优先级排序`;
+      $('configuredAccounts').textContent = String(data.summary?.configuredAccounts ?? 0);
+      $('healthyCount').textContent = String(data.summary?.healthyUpstreams ?? 0);
+      $('degradedCount').textContent = String(data.summary?.degradedUpstreams ?? 0);
+      $('missingShareUrlCount').textContent = String(data.summary?.missingShareUrl ?? 0);
+      $('primaryName').textContent = data.summary?.primaryAccountName || '-';
+      $('updatedAt').textContent = fmtTime(data.summary?.updatedAt);
+      $('listMeta').textContent = `共 ${data.summary?.totalUpstreams ?? upstreams.length} 个实例节点`;
+
       $('upstreamList').innerHTML = upstreams.length
-        ? upstreams.map(renderUpstreamCard).join('')
-        : '<div class="card">当前还没有可用连接，请先启动后台服务并等待同步完成。</div>';
+        ? upstreams.map(u => renderUpstreamCard(u, stateMap.get(u.accountId))).join('')
+        : '<div class="empty">当前还没有可用连接，请先启动后台服务并等待同步完成。</div>';
+
+      const renewItems = states.flatMap(s => (Array.isArray(s.recentRenewals) ? s.recentRenewals.map(item => ({ ...item, accountId: s.accountId })) : []))
+        .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
+        .slice(0, 10);
+      $('renewMeta').textContent = `最近 ${renewItems.length} 条`;
+      $('renewTimeline').innerHTML = renewItems.length
+        ? renewItems.map(renderRenewItem).join('')
+        : '<div class="empty">暂无恢复记录</div>';
+
+      const logs = Array.isArray(data.logs) ? data.logs : [];
+      state.lastLogsText = logs.map(item => `[${item.file}] ${item.line}`).join('\n');
+      $('logBox').innerHTML = logs.length
+        ? logs.map(item => `<div class="log-line"><span class="log-file">[${escapeHtml(item.file)}]</span>${escapeHtml(item.line)}</div>`).join('')
+        : '<div class="empty">暂无日志</div>';
+
+      if (!state.dirty) {
+        state.accounts = Array.isArray(data.accounts?.accounts) ? data.accounts.accounts : state.accounts;
+        state.accountsPath = data.accounts?.path || state.accountsPath;
+        $('accountsPath').textContent = state.accountsPath || 'accounts.json';
+        renderAccountEditor();
+      }
     }
 
     $('refreshBtn').addEventListener('click', refreshAll);
-    $('refreshMs').addEventListener('change', () => {
-      applyAutoRefresh();
-      refreshAll();
-    });
-    $('copyAccessBtn').addEventListener('click', () => {
-      copyText($('accessUrl').textContent, '已复制接入地址');
-    });
+    $('refreshMs').addEventListener('change', () => { applyAutoRefresh(); refreshAll(); });
+    $('copyAccessBtn').addEventListener('click', () => copyText($('accessUrl').textContent, '已复制接入地址'));
     $('copyOpenClawBtn').addEventListener('click', () => {
-      const config = JSON.stringify({
-        models: {
-          providers: {
-            openai: {
-              baseUrl: $('accessUrl').textContent
-            }
-          }
-        }
-      }, null, 2);
+      const config = JSON.stringify({ models: { providers: { openai: { baseUrl: $('accessUrl').textContent } } } }, null, 2);
       copyText(config, '已复制 OpenClaw 配置片段');
     });
-    $('startBtn').addEventListener('click', async () => {
-      $('controlTip').textContent = '正在启动后台同步服务...';
-      await postJson('/api/control/start');
-      await refreshAll();
+    $('copyLogsBtn').addEventListener('click', () => copyText(state.lastLogsText || '暂无日志', '已复制日志'));
+    $('startBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在启动后台同步服务...'; await postJson('/api/control/start'); await refreshAll(); });
+    $('stopBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在停止后台同步服务...'; await postJson('/api/control/stop'); await refreshAll(); });
+    $('retryBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在重试后台同步服务...'; await postJson('/api/control/retry'); await refreshAll(); });
+    $('addAccountBtn').addEventListener('click', () => {
+      const current = collectAccountsFromDom();
+      state.accounts = current;
+      state.accounts.push(accountTemplate(state.accounts.length));
+      state.dirty = true;
+      renderAccountEditor();
+      showAccountsBanner('已新增一个账号草稿，记得保存。', 'ok');
     });
-    $('stopBtn').addEventListener('click', async () => {
-      $('controlTip').textContent = '正在停止后台同步服务...';
-      await postJson('/api/control/stop');
-      await refreshAll();
-    });
-    $('retryBtn').addEventListener('click', async () => {
-      $('controlTip').textContent = '正在重试后台同步服务...';
-      await postJson('/api/control/retry');
-      await refreshAll();
-    });
+    $('saveAccountsBtn').addEventListener('click', saveAccounts);
 
+    bindAccountEditorEvents();
     applyAutoRefresh();
+    loadAccountsForEditor(true);
     refreshAll();
   </script>
 </body>
