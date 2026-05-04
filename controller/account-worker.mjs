@@ -237,6 +237,22 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         return { success: false, reply, shareUrl: null, localUrl, healthOk: true, started: parsed.started, tunnelMissing: true };
       }
 
+      const shareHealth = await probeHealth({ baseUrl: shareUrl, timeoutMs: 15_000 });
+      if (!shareHealth.ok) {
+        log('warn', `实例返回了分享地址，但对外健康检查失败 (${shareHealth.error || `health ${shareHealth.statusCode}`})`);
+        log('info', '回复:', reply?.slice(0, 500));
+        return {
+          success: false,
+          reply,
+          shareUrl: null,
+          localUrl,
+          healthOk: true,
+          started: parsed.started,
+          tunnelMissing: true,
+          invalidShareUrl: shareUrl,
+        };
+      }
+
       log('ok', `实例原地恢复成功 | 分享地址: ${shareUrl}`);
       return { success: true, reply, shareUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: false };
     } catch (e) {
@@ -379,7 +395,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
   }
 
   async function runLoop({ once = false }) {
-    const state = stateStore.loadState();
+    let state = stateStore.loadState();
 
     log('info', '═'.repeat(50));
     log('info', 'KeyPool Controller (Part 2) 启动');
@@ -394,6 +410,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     }
 
     while (true) {
+      state = stateStore.loadState();
       try {
         const status = await api.getStatus(cookie);
         const now = Date.now();

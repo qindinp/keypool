@@ -325,7 +325,10 @@ async function runAccountAction(accountId, action) {
   } else if (action === 'recover') {
     const recovered = await runtime.worker.recoverAvailableInstance();
     if (!recovered?.success) {
-      throw new Error('原地恢复未拿到可确认的可用分享地址');
+      const detail = recovered?.invalidShareUrl
+        ? `原地恢复拿到了失效 tunnel 地址: ${recovered.invalidShareUrl}`
+        : '原地恢复未拿到可确认的可用分享地址';
+      throw new Error(detail);
     }
 
     const state = runtime.stateStore.loadState();
@@ -353,6 +356,7 @@ async function runAccountAction(accountId, action) {
       expireTime = status.expireTime || expireTime;
     } catch {}
 
+    const endpointHealth = await probeHealth({ baseUrl: state.currentShareUrl, timeoutMs: 15_000 });
     registry.upsert({
       accountId: account.id,
       accountName: account.name,
@@ -361,7 +365,7 @@ async function runAccountAction(accountId, action) {
       baseUrl: state.currentShareUrl || null,
       shareUrl: state.currentShareUrl || null,
       localUrl: state.currentLocalUrl || 'http://127.0.0.1:9200',
-      healthy: Boolean(state.currentShareUrl),
+      healthy: Boolean(state.currentShareUrl) && endpointHealth.ok,
       priority: account.priority,
       tags: account.tags || [],
       instanceStatus,
@@ -369,8 +373,8 @@ async function runAccountAction(accountId, action) {
       deployed: true,
       deployCount: state.deployCount || 0,
       lastDeployAt: state.lastDeployAt || null,
-      lastError: null,
-      lastStatusCode: state.currentShareUrl ? 200 : 0,
+      lastError: endpointHealth.ok ? null : (endpointHealth.error || `health ${endpointHealth.statusCode}`),
+      lastStatusCode: endpointHealth.statusCode || 0,
     });
   } else if (action === 'destroy') {
     await runtime.api.destroyInstance(account.cookie);
