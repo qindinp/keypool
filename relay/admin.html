@@ -82,7 +82,9 @@
     .log-file { color: #8fc6ff; margin-right: 8px; }
     .tip { color: var(--muted); font-size: 13px; margin-top: 8px; }
     .empty { color: var(--muted); padding: 18px; border:1px dashed var(--line); border-radius:14px; }
-    .accounts-layout { display:grid; grid-template-columns: 1.1fr 2fr 1fr; gap:14px; }
+    .accounts-layout { display:grid; grid-template-columns: minmax(0,1fr) 280px; gap:14px; }
+    .accounts-main { display:flex; flex-direction:column; gap:14px; }
+    .account-editor-layout { display:grid; grid-template-columns: 1.1fr 2fr; gap:14px; }
     .account-sidebar { display:flex; flex-direction:column; gap:10px; }
     .account-list { display:flex; flex-direction:column; gap:10px; }
     .account-list-item { border:1px solid var(--line); border-radius:14px; padding:12px; background: rgba(255,255,255,.03); cursor:pointer; }
@@ -170,33 +172,29 @@
       </div>
     </div>
     <div class="accounts-layout">
-      <div class="card">
-        <div id="accountsBanner"></div>
-        <div class="accounts-layout">
-          <div class="account-sidebar">
-            <div class="section-title">
-              <h3>账号列表</h3>
-              <div class="muted" id="accountListMeta">-</div>
+      <div class="accounts-main">
+        <div class="card">
+          <div id="accountsBanner"></div>
+          <div class="account-editor-layout">
+            <div class="account-sidebar">
+              <div class="section-title">
+                <h3>账号列表</h3>
+                <div class="muted" id="accountListMeta">-</div>
+              </div>
+              <div id="accountList" class="account-list"></div>
             </div>
-            <div id="accountList" class="account-list"></div>
-          </div>
-          <div class="account-editor-panel">
-            <div id="accountEditorList" class="account-editor-list"></div>
+            <div class="account-editor-panel">
+              <div id="accountEditorList" class="account-editor-list"></div>
+            </div>
           </div>
         </div>
       </div>
       <div class="card">
-        <h3>使用说明</h3>
-        <div class="tip">这里维护的是 <span class="mono" id="accountsPath">accounts.json</span>。</div>
-        <div class="tip">保存时会：</div>
-        <div class="tip">1. 写入账号配置</div>
-        <div class="tip">2. 自动重启 manager</div>
-        <div class="tip">3. 让新账号/新 Cookie 立即生效</div>
-        <div class="tip">支持两种方式：</div>
-        <div class="tip">- 直接填写 cookie</div>
-        <div class="tip">- 填写 cookieFile（相对项目目录）</div>
-        <div class="tip">每个实例卡片现在也支持“立即部署 / 立即恢复”。</div>
-        <div class="tip">如果你不想在页面显示旧 cookie，系统会保留已有值；只有你重新填写时才会覆盖。</div>
+        <h3>说明</h3>
+        <div class="tip">配置文件：<span class="mono" id="accountsPath">accounts.json</span></div>
+        <div class="tip">保存后会自动重启 manager 并生效。</div>
+        <div class="tip">新账号需填写 <span class="mono">cookie</span> 或 <span class="mono">cookieFile</span>。</div>
+        <div class="tip">留空 cookie 不会覆盖旧值。</div>
       </div>
     </div>
 
