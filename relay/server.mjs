@@ -324,6 +324,8 @@ async function runAccountAction(accountId, action) {
     await runtime.worker.renewFlow('admin-manual-deploy');
   } else if (action === 'recover') {
     await runtime.worker.recoverAvailableInstance();
+  } else if (action === 'destroy') {
+    await runtime.api.destroyInstance(account.cookie);
   } else {
     throw new Error(`不支持的账号动作: ${action}`);
   }
@@ -674,7 +676,7 @@ async function handleAdminApi(req, res, url) {
     return sendJson(res, 200, loadAccountsConfigForClient());
   }
 
-  const accountActionMatch = url.pathname.match(/^\/api\/admin\/accounts\/([^/]+)\/(deploy|recover)$/);
+  const accountActionMatch = url.pathname.match(/^\/api\/admin\/accounts\/([^/]+)\/(deploy|recover|destroy)$/);
   if (accountActionMatch && req.method === 'POST') {
     const [, accountIdEncoded, action] = accountActionMatch;
     const accountId = decodeURIComponent(accountIdEncoded);
@@ -704,7 +706,7 @@ async function handleAdminApi(req, res, url) {
     });
   }
 
-  return sendJson(res, 404, { error: 'not_found', message: '支持的管理路径: /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover' });
+  return sendJson(res, 404, { error: 'not_found', message: '支持的管理路径: /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy' });
 }
 
 const server = createServer(async (req, res) => {
@@ -748,7 +750,7 @@ const server = createServer(async (req, res) => {
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /health /registry /v1/models /v1/embeddings /v1/chat/completions',
+      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });

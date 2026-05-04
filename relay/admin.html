@@ -352,6 +352,7 @@
       const tags = Array.isArray(u.tags) ? u.tags : [];
       const deployBusy = isActionBusy(u.accountId, 'deploy');
       const recoverBusy = isActionBusy(u.accountId, 'recover');
+      const destroyBusy = isActionBusy(u.accountId, 'destroy');
       const actionStatus = actionStatusFor(u.accountId);
       return `
         <div class="upstream-card">
@@ -385,6 +386,7 @@
           <div class="card-actions">
             <button class="primary-btn" data-upstream-action="deploy" data-account-id="${escapeHtml(u.accountId || '')}" ${deployBusy ? 'disabled' : ''}>${deployBusy ? '部署中...' : '立即部署'}</button>
             <button class="secondary-btn" data-upstream-action="recover" data-account-id="${escapeHtml(u.accountId || '')}" ${recoverBusy ? 'disabled' : ''}>${recoverBusy ? '恢复中...' : '立即恢复'}</button>
+            <button class="danger-btn" data-upstream-action="destroy" data-account-id="${escapeHtml(u.accountId || '')}" ${destroyBusy ? 'disabled' : ''}>${destroyBusy ? '销毁中...' : '销毁实例'}</button>
           </div>
           ${actionStatus ? `<div class="action-status ${escapeHtml(actionStatus.kind)}"><strong>${escapeHtml(fmtTime(actionStatus.at))}</strong> · ${escapeHtml(actionStatus.message)}</div>` : ''}
         </div>`;
@@ -729,7 +731,8 @@
       const key = actionKey(accountId, action);
       if (state.busyActions.has(key)) return;
       state.busyActions.add(key);
-      const actionText = action === 'deploy' ? '立即部署' : '立即恢复';
+      const actionTextMap = { deploy: '立即部署', recover: '立即恢复', destroy: '销毁实例' };
+      const actionText = actionTextMap[action] || action;
       setActionStatus(accountId, 'warn', `${actionText} 已发出，正在执行...`);
       try {
         $('controlTip').textContent = `正在对 ${accountId} 执行 ${actionText}...`;
@@ -740,10 +743,16 @@
           setActionStatus(accountId, 'bad', `${actionText} 失败：${message}`);
           $('controlTip').textContent = `${accountId} ${actionText}失败`;
         } else {
-          const summary = result.body?.state?.currentShareUrl
-            ? `已获取分享地址 ${result.body.state.currentShareUrl}`
-            : (result.body?.state?.currentLocalUrl ? `本地地址 ${result.body.state.currentLocalUrl}` : '操作已完成');
-          setActionStatus(accountId, result.body?.state?.currentShareUrl ? 'ok' : 'warn', `${actionText} 完成：${summary}`);
+          let summary = '操作已完成';
+          if (action === 'destroy') {
+            summary = '实例已请求销毁，稍后刷新可看到最新状态';
+          } else if (result.body?.state?.currentShareUrl) {
+            summary = `已获取分享地址 ${result.body.state.currentShareUrl}`;
+          } else if (result.body?.state?.currentLocalUrl) {
+            summary = `本地地址 ${result.body.state.currentLocalUrl}`;
+          }
+          const kind = action === 'destroy' ? 'warn' : (result.body?.state?.currentShareUrl ? 'ok' : 'warn');
+          setActionStatus(accountId, kind, `${actionText} 完成：${summary}`);
           $('controlTip').textContent = `${accountId} ${actionText}完成`;
         }
       } finally {

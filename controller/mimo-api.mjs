@@ -14,6 +14,20 @@ export function getCookie() {
   process.exit(1);
 }
 
+function extractPhFromCookie(cookie) {
+  const text = String(cookie || '');
+  const match = text.match(/(?:^|;\s*)xiaomichatbot_ph=(?:"([^"]+)"|([^;]+))/i);
+  return (match?.[1] || match?.[2] || '').trim() || null;
+}
+
+function resolvePh(cookie) {
+  const cookiePh = extractPhFromCookie(cookie);
+  if (cookiePh) {
+    return `xiaomichatbot_ph=${encodeURIComponent(cookiePh)}`;
+  }
+  return PH;
+}
+
 function apiRaw(path, cookie, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, BASE);
@@ -63,26 +77,32 @@ export function createMimoApi({ sleep }) {
   }
 
   async function getStatus(cookie) {
-    const resp = await api(`/open-apis/user/mimo-claw/status?${PH}`, cookie);
+    const resp = await api(`/open-apis/user/mimo-claw/status?${resolvePh(cookie)}`, cookie);
     if (resp.code !== 0) throw new Error(`获取状态失败: ${JSON.stringify(resp)}`);
     return resp.data;
   }
 
   async function createInstance(cookie) {
-    const resp = await api(`/open-apis/user/mimo-claw/create?${PH}`, cookie, 'POST', '{}');
+    const resp = await api(`/open-apis/user/mimo-claw/create?${resolvePh(cookie)}`, cookie, 'POST', '{}');
     if (resp.code !== 0) throw new Error(`创建实例失败: ${JSON.stringify(resp)}`);
     return resp.data;
   }
 
+  async function destroyInstance(cookie) {
+    const resp = await api(`/open-apis/user/mimo-claw/destroy?${resolvePh(cookie)}`, cookie, 'POST', '');
+    if (resp.code !== 0) throw new Error(`销毁实例失败: ${JSON.stringify(resp)}`);
+    return resp.data;
+  }
+
   async function getTicket(cookie) {
-    const resp = await api(`/open-apis/user/ws/ticket?${PH}`, cookie);
+    const resp = await api(`/open-apis/user/ws/ticket?${resolvePh(cookie)}`, cookie);
     if (resp.code !== 0) throw new Error(`获取 ticket 失败: ${JSON.stringify(resp)}`);
     return resp.data.ticket;
   }
 
   async function validateCookie(cookie) {
     try {
-      const resp = await api(`/open-apis/user/mi/get?${PH}`, cookie);
+      const resp = await api(`/open-apis/user/mi/get?${resolvePh(cookie)}`, cookie);
       if (resp.code === 0 && resp.data?.userId) {
         return { valid: true, userId: resp.data.userId, userName: resp.data.userName };
       }
@@ -92,5 +112,5 @@ export function createMimoApi({ sleep }) {
     }
   }
 
-  return { api, getStatus, createInstance, getTicket, validateCookie };
+  return { api, getStatus, createInstance, destroyInstance, getTicket, validateCookie, extractPhFromCookie, resolvePh };
 }
