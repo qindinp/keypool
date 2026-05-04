@@ -299,11 +299,27 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     }
 
     const state = stateStore.loadState();
+    const previousShareUrl = state.currentShareUrl || null;
+    let effectiveShareUrl = deployResult.shareUrl || null;
+    if (!effectiveShareUrl && previousShareUrl) {
+      try {
+        const previousHealth = await probeHealth({ baseUrl: previousShareUrl, timeoutMs: 15_000 });
+        if (previousHealth.ok) {
+          effectiveShareUrl = previousShareUrl;
+          log('info', `本轮未拿到新分享地址，保留已验证健康的旧地址: ${previousShareUrl}`);
+        } else {
+          log('warn', `本轮未拿到新分享地址，且旧地址已不健康 (${previousHealth.error || `health ${previousHealth.statusCode}`})，不再保留`);
+        }
+      } catch (e) {
+        log('warn', `校验旧分享地址失败 (${e.message})，不再保留`);
+      }
+    }
+
     state.lastExpireTime = newStatus.expireTime;
     state.lastDeployAt = Date.now();
     state.deployCount = (state.deployCount || 0) + 1;
     if (newKey) state.currentKey = newKey;
-    state.currentShareUrl = deployResult.shareUrl || null;
+    state.currentShareUrl = effectiveShareUrl;
     state.currentLocalUrl = deployResult.localUrl || 'http://127.0.0.1:9200';
     state.history = state.history || [];
     state.history.push({
@@ -311,7 +327,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       reason,
       expireTime: newStatus.expireTime,
       key: newKey ? newKey.slice(0, 20) + '...' : null,
-      shareUrl: deployResult.shareUrl || null,
+      shareUrl: effectiveShareUrl,
       localUrl: deployResult.localUrl || 'http://127.0.0.1:9200',
       success: true,
     });
@@ -319,8 +335,8 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     state.lastHealthError = null;
     stateStore.saveState(state, log);
 
-    if (deployResult.shareUrl) {
-      log('ok', `✨ 第 ${state.deployCount} 次续期完成 | 分享地址: ${deployResult.shareUrl}`);
+    if (effectiveShareUrl) {
+      log('ok', `✨ 第 ${state.deployCount} 次续期完成 | 分享地址: ${effectiveShareUrl}`);
     } else {
       log('warn', `✨ 第 ${state.deployCount} 次续期完成 | 本地服务已恢复，但未获取到新的分享地址`);
       log('info', `本地地址: ${state.currentLocalUrl}`);
