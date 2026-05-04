@@ -1,21 +1,66 @@
 import { DeployClient } from './deploy-client.mjs';
 import { pushKeyExchange } from './key-exchange.mjs';
 import { withRetry, sleep } from './utils.mjs';
+import { probeHealth } from '../relay/proxy.mjs';
+
+const MISSING_SHARE_URL_RETRY_MS = 5 * 60 * 1000;
 
 function parseDeployResult(reply) {
   const text = String(reply || '');
-  const shareUrlMatch = text.match(/https:\/\/[^\s`]+/);
-  const localUrlMatch = text.match(/http:\/\/127\.0\.0\.1:9200(?:\/health)?/);
-  const healthOk = /健康检查通过/.test(text);
-  const started = /服务已成功启动/.test(text);
+  const normalized = text.replace(/\r/g, '');
+  const shareUrlLineMatch = normalized.match(/(?:^|\n)SHARE_URL\s*[=:]\s*(https?:\/\/[^\s`"'<>]+)/i);
+  const labeledShareUrl = shareUrlLineMatch ? shareUrlLineMatch[1] : null;
+  const candidateUrls = Array.from(normalized.matchAll(/https?:\/\/[^\s`"'<>]+/g)).map(m => m[0]);
+  const shareUrl = [labeledShareUrl, ...candidateUrls]
+    .map(url => normalizeShareUrl(url))
+    .filter(Boolean)
+    .sort((a, b) => getShareUrlPriority(a) - getShareUrlPriority(b))[0] || null;
+  const localUrlMatch = normalized.match(/http:\/\/127\.0\.0\.1:9200(?:\/health)?/);
+  const healthOk = /健康检查通过|LOCAL_OK/.test(normalized);
+  const started = /服务已成功启动|SERVICE_RUNNING|SERVICE_RESTARTED/.test(normalized);
 
   return {
-    shareUrl: shareUrlMatch ? shareUrlMatch[0] : null,
+    shareUrl,
     localUrl: localUrlMatch ? localUrlMatch[0] : null,
     healthOk,
     started,
   };
 }
+
+function normalizeShareUrl(url) {
+  if (!isValidShareUrl(url)) return null;
+  return url.replace(/\/+$/, '');
+}
+
+function getShareUrlPriority(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host.endsWith('.lhr.life')) return 1;
+    if (host.endsWith('.serveo.net')) return 2;
+    if (host.endsWith('.localhost.run')) return 3;
+    return 99;
+  } catch {
+    return 99;
+  }
+}
+
+function isValidShareUrl(url) {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'admin.localhost.run') return false;
+    if (host === 'localhost.run') return false;
+    if (host === 'twitter.com') return false;
+    if (host.endsWith('.lhr.life')) return true;
+    if (host.endsWith('.serveo.net')) return true;
+    if (host.endsWith('.localhost.run')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 
 export function createAccountWorker({ cookie, config, api, stateStore, log }) {
   async function waitForReady() {
@@ -70,10 +115,13 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '不要覆盖 SOUL.md，不要修改任何全局安全配置。',
         '拉取完成后进入 keypool 目录，启动 node server.mjs。',
         '启动后检查 http://127.0.0.1:9200/health 是否可访问。',
-        '如果服务额外提供了可对外访问的分享地址，请一并返回该地址。',
+        '如果服务会异步建立 SSH 隧道，请额外等待最多 25 秒，检查 keypool/.tunnel-url 是否出现。',
+        '如果 keypool/.tunnel-url 存在，请读取其中地址并按 `SHARE_URL=<地址>` 单独输出一行。',
+        '如果没有拿到对外地址，也请明确输出 `SHARE_URL_MISSING`。',
         `如果健康检查通过，请只回复 ${marker}_OK。`,
         `如果失败，请只回复 ${marker}_FAIL，并附上一句最短原因。`,
       ].join('\n');
+
 
       log('deploy', '下发部署请求...');
       const reply = await client.chat(deployPrompt, config.deployTimeout);
@@ -128,6 +176,72 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     } catch (e) {
       log('error', '获取 Key 失败:', e.message);
       return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  async function recoverAvailableInstance() {
+    const client = new DeployClient({ cookie, getTicket: api.getTicket, config, log });
+    try {
+      log('link', '分享地址异常，尝试直连实例 Gateway 做原地探测...');
+      await withRetry('WS连接', () => client.connect(), {
+        maxRetries: config.maxRetries,
+        retryBaseDelay: config.retryBaseDelay,
+        retryMaxDelay: config.retryMaxDelay,
+        log,
+      });
+
+      const marker = `RECOVER_${Date.now().toString(36)}`;
+      const recoverPrompt = [
+        '请不要重新创建实例，也不要重新 git clone。',
+        '你现在只做原地检查和原地恢复。',
+        '先检查 keypool 目录下服务是否正在运行，并访问 http://127.0.0.1:9200/health 。',
+        '如果本地健康检查已经通过，请回复 LOCAL_OK。',
+        '如果本地服务未运行或健康检查失败，请在已有 keypool 目录中原地重新启动 node server.mjs，等待健康检查恢复。',
+        '如果原地重启成功，请回复 SERVICE_RESTARTED。',
+        '如果服务本来就在运行，也可以回复 SERVICE_RUNNING。',
+        '请额外检查以下信息并一并返回：',
+        '1. keypool/.tunnel-url 是否存在；如果存在，读取内容并按 `SHARE_URL=<地址>` 单独输出一行。',
+        '2. 如果不存在，请输出 `SHARE_URL_MISSING`。',
+        '3. 输出 `TUNNEL_FILE=present` 或 `TUNNEL_FILE=missing`。',
+        '4. 输出 `SSH_TUNNEL=running` 或 `SSH_TUNNEL=missing`，用于表示 ssh -R 隧道进程是否存在。',
+        '5. 如可行，附带 /tmp/keypool.log 最后 20 行中的 tunnel/ssh 相关关键信息。',
+        `如果最终本地健康检查通过，请只回复 ${marker}_OK，并附带最短状态摘要。`,
+        `如果最终仍失败，请只回复 ${marker}_FAIL，并附带一句最短原因。`,
+      ].join('\n');
+
+
+
+      const reply = await client.chat(recoverPrompt, config.deployTimeout);
+      const parsed = parseDeployResult(reply);
+
+      if (!reply?.includes(`${marker}_OK`)) {
+        log('warn', '实例原地探测/恢复失败');
+        log('info', '回复:', reply?.slice(0, 500));
+        return { success: false, reply, ...parsed };
+      }
+
+      const shareUrl = parsed.shareUrl || null;
+      const localUrl = parsed.localUrl || 'http://127.0.0.1:9200';
+      const localRecovered = parsed.healthOk || parsed.started || reply?.includes('LOCAL_OK') || reply?.includes('SERVICE_RUNNING') || reply?.includes('SERVICE_RESTARTED');
+      if (!localRecovered) {
+        log('warn', '实例原地探测未能确认本地服务健康恢复');
+        log('info', '回复:', reply?.slice(0, 500));
+        return { success: false, reply, shareUrl, localUrl, healthOk: false, started: parsed.started, tunnelMissing: false };
+      }
+
+      if (!shareUrl) {
+        log('warn', '实例内服务已恢复，但未返回可对外访问的分享地址');
+        log('info', '回复:', reply?.slice(0, 500));
+        return { success: false, reply, shareUrl: null, localUrl, healthOk: true, started: parsed.started, tunnelMissing: true };
+      }
+
+      log('ok', `实例原地恢复成功 | 分享地址: ${shareUrl}`);
+      return { success: true, reply, shareUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: false };
+    } catch (e) {
+      log('warn', '实例原地探测失败:', e.message);
+      return { success: false, reply: '', shareUrl: null, localUrl: null, healthOk: false, started: false, tunnelMissing: false };
     } finally {
       client.close();
     }
@@ -189,7 +303,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     state.lastDeployAt = Date.now();
     state.deployCount = (state.deployCount || 0) + 1;
     if (newKey) state.currentKey = newKey;
-    state.currentShareUrl = deployResult.shareUrl || state.currentShareUrl || null;
+    state.currentShareUrl = deployResult.shareUrl || null;
     state.currentLocalUrl = deployResult.localUrl || 'http://127.0.0.1:9200';
     state.history = state.history || [];
     state.history.push({
@@ -202,12 +316,14 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       success: true,
     });
     if (state.history.length > 50) state.history = state.history.slice(-50);
+    state.lastHealthError = null;
     stateStore.saveState(state, log);
 
     if (deployResult.shareUrl) {
       log('ok', `✨ 第 ${state.deployCount} 次续期完成 | 分享地址: ${deployResult.shareUrl}`);
     } else {
-      log('ok', `✨ 第 ${state.deployCount} 次续期完成 | 本地地址: ${state.currentLocalUrl}`);
+      log('warn', `✨ 第 ${state.deployCount} 次续期完成 | 本地服务已恢复，但未获取到新的分享地址`);
+      log('info', `本地地址: ${state.currentLocalUrl}`);
     }
     return true;
   }
@@ -274,6 +390,8 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         const currentShareUrl = state.currentShareUrl || null;
         const currentLocalUrl = state.currentLocalUrl || null;
         const hasDeployment = Boolean(state.lastDeployAt) && Boolean(currentShareUrl || currentLocalUrl);
+        let endpointUnhealthy = false;
+        let endpointError = null;
         if (state.lastExpireTime !== status.expireTime || state.lastObservedStatus !== currentStatus) {
           const remainText = hasExpireTime ? `${remainMin}min` : '未知';
           const expireText = hasExpireTime ? new Date(expireTime).toLocaleString() : '未知';
@@ -292,6 +410,63 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         } else if (currentStatus === 'AVAILABLE' && !hasDeployment) {
           log('warn', '实例已可用但尚未完成部署，尝试自动部署');
           await renewFlow('available-but-not-deployed');
+        } else if (currentStatus === 'AVAILABLE' && currentShareUrl) {
+          const health = await probeHealth({ baseUrl: currentShareUrl, timeoutMs: 15_000 });
+          endpointUnhealthy = !health.ok;
+          endpointError = health.error || `health ${health.statusCode}`;
+          if (endpointUnhealthy) {
+            log('warn', `分享地址健康检查失败 (${endpointError})，先尝试实例内原地恢复`);
+            state.lastHealthError = endpointError;
+            stateStore.saveState(state, log);
+
+            const recovered = await recoverAvailableInstance();
+            if (recovered.success) {
+              state.currentShareUrl = recovered.shareUrl || null;
+              state.currentLocalUrl = recovered.localUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
+              state.lastHealthError = null;
+              stateStore.saveState(state, log);
+              if (state.currentShareUrl) {
+                log('ok', '实例原地恢复成功，跳过重部署');
+              } else {
+                log('warn', '实例原地恢复成功，但未获得新的分享地址；将等待后续重新获取');
+              }
+            } else {
+              state.currentShareUrl = null;
+              stateStore.saveState(state, log);
+              log('warn', '实例原地恢复失败，已清除失效分享地址，回退到完整续期/重部署流程');
+              await renewFlow('available-but-unhealthy');
+            }
+          } else if (state.lastHealthError) {
+            state.lastHealthError = null;
+            stateStore.saveState(state, log);
+          }
+        } else if (currentStatus === 'AVAILABLE' && !currentShareUrl) {
+          const lastDeployAt = Number(state.lastDeployAt || 0);
+          const missingSinceLastDeploy = lastDeployAt > 0 ? (now - lastDeployAt) : Number.POSITIVE_INFINITY;
+
+          if (missingSinceLastDeploy < MISSING_SHARE_URL_RETRY_MS) {
+            const waitSec = Math.max(1, Math.ceil((MISSING_SHARE_URL_RETRY_MS - missingSinceLastDeploy) / 1000));
+            log('warn', `实例缺少分享地址；暂不重部署，等待 tunnel 输出（约 ${waitSec}s 后再试）`);
+          } else {
+            log('warn', '实例长时间缺少分享地址；先尝试实例内原地探测 tunnel 状态');
+            const recovered = await recoverAvailableInstance();
+            if (recovered.success && recovered.shareUrl) {
+              state.currentShareUrl = recovered.shareUrl;
+              state.currentLocalUrl = recovered.localUrl || currentLocalUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
+              state.lastHealthError = null;
+              stateStore.saveState(state, log);
+              log('ok', '实例原地探测成功，已恢复分享地址');
+            } else if (recovered.tunnelMissing) {
+              state.currentShareUrl = null;
+              state.currentLocalUrl = recovered.localUrl || currentLocalUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
+              state.lastHealthError = 'missing shareUrl';
+              stateStore.saveState(state, log);
+              log('warn', '实例内服务正常，但 tunnel 地址仍未产出；暂不重部署，等待下一轮再探测');
+            } else {
+              log('warn', '实例缺少分享地址，且原地探测未恢复；尝试自动重新部署');
+              await renewFlow('available-without-share-url');
+            }
+          }
         } else if (remaining > 0 && remaining < config.renewBefore) {
           log('clock', `⏰ 即将到期 (剩余 ${remainMin}min)`);
           await renewFlow('expiring');
@@ -308,5 +483,5 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     }
   }
 
-  return { waitForReady, deployKeyPool, fetchNewApiKey, renewFlow, cmdStatus, cmdDeploy, runLoop };
+  return { waitForReady, deployKeyPool, fetchNewApiKey, recoverAvailableInstance, renewFlow, cmdStatus, cmdDeploy, runLoop };
 }

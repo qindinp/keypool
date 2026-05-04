@@ -16,23 +16,51 @@ let tunnelProcess = null;
 
 /**
  * 从 SSH 隧道输出中提取公网 URL
- * 匹配任何 http(s):// 开头的 URL（不再限制特定域名后缀）
+ * 只接受真实转发地址，显式过滤 localhost.run 的说明/管理页链接
  */
 function extractPublicUrl(text) {
-  // 匹配隧道服务返回的 URL — 通常包含 "https://" 且在行首或冒号后
-  const patterns = [
-    // "https://xxx.lhr.life" 或 "https://xxx.serveo.net" 等常见格式
-    /(https?:\/\/[a-zA-Z0-9._-]+\.(?:lhr\.life|serveo\.net|localhost\.run)[^\s"'<>]*)/,
-    // 通用隧道 URL（fallback）— 匹配 "https://xxx-yyy-zzz.tunnel.service/" 格式
-    /(https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}\/[^\s"'<>]*)/,
-  ];
-
-  for (const re of patterns) {
-    const match = text.match(re);
-    if (match) return match[1];
-  }
-  return null;
+  const rawUrls = Array.from(String(text || '').matchAll(/https?:\/\/[^\s"'<>`\]]+/g)).map(m => m[0]);
+  const candidates = rawUrls
+    .map(url => normalizeTunnelUrl(url))
+    .filter(Boolean)
+    .sort((a, b) => getTunnelUrlPriority(a) - getTunnelUrlPriority(b));
+  return candidates[0] || null;
 }
+
+function normalizeTunnelUrl(url) {
+  if (!isValidTunnelUrl(url)) return null;
+  return url.replace(/\/+$/, '');
+}
+
+function getTunnelUrlPriority(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host.endsWith('.lhr.life')) return 1;
+    if (host.endsWith('.serveo.net')) return 2;
+    if (host.endsWith('.localhost.run')) return 3;
+    return 99;
+  } catch {
+    return 99;
+  }
+}
+
+function isValidTunnelUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'admin.localhost.run') return false;
+    if (host === 'localhost.run') return false;
+    if (host === 'twitter.com') return false;
+    if (url.includes('/docs/')) return false;
+    if (host.endsWith('.lhr.life')) return true;
+    if (host.endsWith('.serveo.net')) return true;
+    if (host.endsWith('.localhost.run')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 
 /**
  * 启动 SSH 隧道
