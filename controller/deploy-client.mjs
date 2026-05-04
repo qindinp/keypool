@@ -80,6 +80,8 @@ function collectTextCandidates(value, seen = new Set()) {
     if (typeof node.text === 'string') push(node.text);
     if (typeof node.message === 'string') push(node.message);
     if (typeof node.delta === 'string') push(node.delta);
+    if (typeof node.output_text === 'string') push(node.output_text);
+    if (typeof node.reasoning_text === 'string') push(node.reasoning_text);
 
     if (node.message && typeof node.message === 'object') visit(node.message);
     if (node.delta && typeof node.delta === 'object') visit(node.delta);
@@ -87,6 +89,10 @@ function collectTextCandidates(value, seen = new Set()) {
     if (node.parts && Array.isArray(node.parts)) visit(node.parts);
     if (node.blocks && Array.isArray(node.blocks)) visit(node.blocks);
     if (node.items && Array.isArray(node.items)) visit(node.items);
+    if (node.messages && Array.isArray(node.messages)) visit(node.messages);
+    if (node.events && Array.isArray(node.events)) visit(node.events);
+    if (node.output && typeof node.output === 'object') visit(node.output);
+    if (node.payload && typeof node.payload === 'object') visit(node.payload);
   };
 
   visit(value);
@@ -142,9 +148,24 @@ export class DeployClient {
     });
   }
 
+  _captureChatEventText(value) {
+    if (!this._chatResolve) return;
+    const eventTexts = collectTextCandidates(value);
+    for (const text of eventTexts) {
+      if (!this._chatEventTexts.includes(text)) this._chatEventTexts.push(text);
+      if (this._chatMatcher && text.includes(this._chatMatcher)) {
+        this._chatMatchedText = text;
+      }
+    }
+  }
+
   _setupHandlers(resolve, reject) {
     const onFrame = (msg) => {
       if (msg.event === 'connect.challenge') return;
+
+      if (msg.type === 'event' && this._chatResolve) {
+        this._captureChatEventText(msg.payload);
+      }
 
       if (msg.type === 'res') {
         const p = this.pending.get(msg.id);
@@ -159,16 +180,6 @@ export class DeployClient {
       if (msg.type === 'event' && msg.event === 'chat') {
         const p = msg.payload;
         if (!p) return;
-
-        if (this._chatResolve) {
-          const eventTexts = collectTextCandidates(p);
-          for (const text of eventTexts) {
-            if (!this._chatEventTexts.includes(text)) this._chatEventTexts.push(text);
-            if (this._chatMatcher && text.includes(this._chatMatcher)) {
-              this._chatMatchedText = text;
-            }
-          }
-        }
 
         if (p.state === 'final' && this._chatResolve) {
           const resolveChat = this._chatResolve;
