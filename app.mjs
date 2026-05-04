@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const relayPort = process.env.RELAY_PORT || '9300';
@@ -55,6 +56,26 @@ async function waitForHealth(url, timeoutMs = 15000) {
   return false;
 }
 
+function waitForPortOpen(host, port, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    socket.connect(Number(port), host);
+  });
+}
+
 async function main() {
   const managerChild = createManagedChild('manager', ['manager.mjs']);
   const relayChild = createManagedChild('relay', ['relay/server.mjs'], {
@@ -101,9 +122,12 @@ async function main() {
 
   await sleep(800);
 
-  const reuseExistingRelay = await waitForHealth(relayHealthUrl, 1200);
+  const relayPortOpen = await waitForPortOpen(relayHost, relayPort, 1200);
+  const reuseExistingRelay = relayPortOpen || await waitForHealth(relayHealthUrl, 1200);
   if (reuseExistingRelay) {
-    console.log('   - 后台服务 2/2: relay（复用当前 9300 服务）');
+    console.log(relayPortOpen
+      ? '   - 后台服务 2/2: relay（检测到 9300 已被占用，复用现有服务）'
+      : '   - 后台服务 2/2: relay（复用当前 9300 服务）');
   } else {
     console.log('   - 后台服务 2/2: relay');
     managedChildren.push(relayChild);
