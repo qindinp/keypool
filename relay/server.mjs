@@ -137,6 +137,23 @@ function stopAppProcess() {
   return runAppBgCommand('stop');
 }
 
+async function startAllServices() {
+  const app = startAppProcess();
+  await sleep(1200);
+  const manager = managerStatus().running ? managerStatus() : startManagerProcess();
+  let appStatusAfter = app;
+  try {
+    appStatusAfter = appStatus();
+  } catch {
+  }
+  return {
+    ok: true,
+    app: appStatusAfter,
+    manager,
+    note: '已尝试一键启动后台 App 与同步服务；若当前页面来自现有 relay，则会优先复用它。',
+  };
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2) + '\n';
   res.writeHead(statusCode, {
@@ -768,7 +785,15 @@ async function handleControlApi(req, res, url) {
     }
   }
 
-  return sendJson(res, 404, { error: 'not_found', message: '支持的控制路径: /api/control/status /api/control/start /api/control/stop /api/control/retry /api/control/app/status /api/control/app/start /api/control/app/stop' });
+  if (url.pathname === '/api/control/all/start' && req.method === 'POST') {
+    try {
+      return sendJson(res, 200, await startAllServices());
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: 'start_all_failed', message: e.message });
+    }
+  }
+
+  return sendJson(res, 404, { error: 'not_found', message: '支持的控制路径: /api/control/status /api/control/start /api/control/stop /api/control/retry /api/control/app/status /api/control/app/start /api/control/app/stop /api/control/all/start' });
 }
 
 async function handleAdminApi(req, res, url) {
@@ -863,7 +888,7 @@ const server = createServer(async (req, res) => {
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/control/app/status /api/control/app/start /api/control/app/stop /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions',
+      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/control/app/status /api/control/app/start /api/control/app/stop /api/control/all/start /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });

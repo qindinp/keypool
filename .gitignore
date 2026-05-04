@@ -10,3 +10,4 @@ config.json
 .tunnel-url
 config.json
 .manager/
+accounts.json

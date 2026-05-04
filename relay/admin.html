@@ -154,7 +154,7 @@
         <button id="startBtn" class="primary-btn">启动同步</button>
         <button id="stopBtn" class="danger-btn">停止同步</button>
         <button id="retryBtn" class="secondary-btn">重试同步</button>
-        <button id="appStartBtn" class="primary-btn">启动后台 App</button>
+        <button id="appStartBtn" class="primary-btn">一键启动全部服务</button>
         <button id="appStopBtn" class="danger-btn">停止后台 App</button>
         <label class="status"><span class="dot" id="autoDot"></span><span>自动刷新</span></label>
         <select id="refreshMs">
@@ -784,7 +784,7 @@
         ? `后台 App 常驻中（PID ${appControl.body?.pid ?? '-' }）`
         : (control.body?.running
           ? `后台同步正在运行（PID ${control.body?.pid ?? '-'})`
-          : '后台当前未运行，可点击“启动后台 App”或“启动同步”');
+          : '后台当前未运行，可点击“一键启动全部服务”或“启动同步”');
 
       if (!overview.ok || !overview.body) {
         $('configuredAccounts').textContent = '0';
@@ -855,7 +855,7 @@
     $('startBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在启动后台同步服务...'; await postJson('/api/control/start'); await refreshAll(); });
     $('stopBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在停止后台同步服务...'; await postJson('/api/control/stop'); await refreshAll(); });
     $('retryBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在重试后台同步服务...'; await postJson('/api/control/retry'); await refreshAll(); });
-    $('appStartBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在启动后台 App...'; await postJson('/api/control/app/start'); await refreshAll(); });
+    $('appStartBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在一键启动全部服务...'; await postJson('/api/control/all/start'); await refreshAll(); });
     $('appStopBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在停止后台 App...'; await postJson('/api/control/app/stop'); await refreshAll(); });
     $('addAccountBtn').addEventListener('click', () => {
       const current = collectAccountsFromDom();
