@@ -111,11 +111,14 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       const marker = `DEPLOY_${Date.now().toString(36)}`;
       const deployPrompt = [
         `这是我的项目地址：${config.deployRepo}`,
-        '请把这个项目拉取到本地工作区目录 keypool。',
+        '请在本地工作区使用 keypool 目录部署这个项目。',
+        '如果 keypool 目录不存在，就先 clone；如果已存在，请不要保留旧代码，务必强制同步到远端最新 main。',
+        '必须执行等价操作：进入 keypool 目录，git fetch origin，然后 git reset --hard origin/main。',
+        '同步完成后，请输出一行 `GIT_HEAD=<当前提交SHA>`。',
         '不要覆盖 SOUL.md，不要修改任何全局安全配置。',
-        '拉取完成后进入 keypool 目录，启动 node server.mjs。',
+        '同步完成后在 keypool 目录启动 node server.mjs。',
         '启动后检查 http://127.0.0.1:9200/health 是否可访问。',
-        '如果服务会异步建立 SSH 隧道，请额外等待最多 25 秒，检查 keypool/.tunnel-url 是否出现。',
+        '如果服务会异步建立 SSH 隧道，请额外等待最多 35 秒，检查 keypool/.tunnel-url 是否出现。',
         '如果 keypool/.tunnel-url 存在，请读取其中地址并按 `SHARE_URL=<地址>` 单独输出一行。',
         '如果没有拿到对外地址，也请明确输出 `SHARE_URL_MISSING`。',
         `如果健康检查通过，请只回复 ${marker}_OK。`,
