@@ -82,8 +82,14 @@
     .log-file { color: #8fc6ff; margin-right: 8px; }
     .tip { color: var(--muted); font-size: 13px; margin-top: 8px; }
     .empty { color: var(--muted); padding: 18px; border:1px dashed var(--line); border-radius:14px; }
-    .accounts-layout { display:grid; grid-template-columns: minmax(0,1fr) 280px; gap:14px; }
+    .accounts-layout { display:grid; grid-template-columns: minmax(0,1fr); gap:14px; }
     .accounts-main { display:flex; flex-direction:column; gap:14px; }
+    .account-toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:10px; }
+    .account-toolbar .search-input { flex:1 1 220px; }
+    .help-wrap { position: relative; margin-left:auto; }
+    .help-btn { width:32px; height:32px; border-radius:999px; border:1px solid var(--line); background: rgba(255,255,255,.04); color: var(--text); cursor:pointer; font-weight:700; }
+    .help-popover { position:absolute; right:0; top:40px; width:280px; padding:12px; border-radius:14px; border:1px solid var(--line); background:#101a29; box-shadow: 0 12px 30px rgba(0,0,0,.28); z-index:10; display:none; }
+    .help-popover.open { display:block; }
     .account-editor-layout { display:grid; grid-template-columns: 1.1fr 2fr; gap:14px; }
     .account-sidebar { display:flex; flex-direction:column; gap:10px; }
     .account-list { display:flex; flex-direction:column; gap:10px; }
@@ -91,6 +97,11 @@
     .account-list-item.active { border-color: var(--blue); background: rgba(91,157,255,.12); }
     .account-list-item .title { font-weight: 700; }
     .account-list-item .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .badge-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .mini-badge { font-size:11px; padding:3px 8px; border-radius:999px; border:1px solid var(--line); background: rgba(255,255,255,.04); }
+    .mini-badge.ok { color: #a9f0ca; border-color: rgba(37,194,129,.35); background: rgba(37,194,129,.10); }
+    .mini-badge.warn { color: #ffe1a3; border-color: rgba(245,185,66,.35); background: rgba(245,185,66,.10); }
+    .mini-badge.bad { color: #ffc0c0; border-color: rgba(255,107,107,.35); background: rgba(255,107,107,.10); }
     .account-editor-panel { min-height: 240px; }
     .account-editor-list { display:grid; gap:12px; }
     .form-grid { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:10px; }
@@ -175,6 +186,25 @@
       <div class="accounts-main">
         <div class="card">
           <div id="accountsBanner"></div>
+          <div class="account-toolbar">
+            <input id="accountSearchInput" class="search-input" placeholder="搜索账号名 / ID / 标签" />
+            <select id="accountFilterSelect">
+              <option value="all">全部账号</option>
+              <option value="enabled">仅启用</option>
+              <option value="healthy">仅健康 upstream</option>
+              <option value="error">仅最近报错</option>
+              <option value="cookie-missing">仅缺少 cookie</option>
+            </select>
+            <div class="help-wrap">
+              <button id="helpBtn" class="help-btn" title="帮助">?</button>
+              <div id="helpPopover" class="help-popover">
+                <div class="tip">配置文件：<span class="mono" id="accountsPath">accounts.json</span></div>
+                <div class="tip">保存后会自动重启 manager 并生效。</div>
+                <div class="tip">新账号需填写 <span class="mono">cookie</span> 或 <span class="mono">cookieFile</span>。</div>
+                <div class="tip">留空 cookie 不会覆盖旧值。</div>
+              </div>
+            </div>
+          </div>
           <div class="account-editor-layout">
             <div class="account-sidebar">
               <div class="section-title">
@@ -188,13 +218,6 @@
             </div>
           </div>
         </div>
-      </div>
-      <div class="card">
-        <h3>说明</h3>
-        <div class="tip">配置文件：<span class="mono" id="accountsPath">accounts.json</span></div>
-        <div class="tip">保存后会自动重启 manager 并生效。</div>
-        <div class="tip">新账号需填写 <span class="mono">cookie</span> 或 <span class="mono">cookieFile</span>。</div>
-        <div class="tip">留空 cookie 不会覆盖旧值。</div>
       </div>
     </div>
 
@@ -251,6 +274,11 @@
       busyActions: new Set(),
       actionStatus: {},
       selectedAccountIndex: 0,
+      accountSearch: '',
+      accountFilter: 'all',
+      upstreamMap: new Map(),
+      stateMap: new Map(),
+      helpOpen: false,
     };
 
     function fmtTime(value) {
@@ -397,19 +425,69 @@
         state.selectedAccountIndex = state.accounts.length - 1;
       }
     }
+    function accountDerivedStatus(acc) {
+      const upstream = state.upstreamMap.get(acc.id) || null;
+      const runtime = state.stateMap.get(acc.id) || null;
+      const hasCookie = Boolean(acc.hasCookie || acc.cookie || acc.hasCookieFile || acc.cookieFile);
+      const enabled = acc.enabled !== false;
+      const healthy = upstream?.healthy === true;
+      const hasError = Boolean(upstream?.lastError || runtime?.lastHealthError);
+      return { upstream, runtime, hasCookie, enabled, healthy, hasError };
+    }
+    function accountMatchesFilter(acc) {
+      const q = state.accountSearch.trim().toLowerCase();
+      const tagsText = Array.isArray(acc.tags) ? acc.tags.join(' ').toLowerCase() : '';
+      const hay = `${acc.name || ''} ${acc.id || ''} ${tagsText}`.toLowerCase();
+      if (q && !hay.includes(q)) return false;
+      const ds = accountDerivedStatus(acc);
+      if (state.accountFilter === 'enabled' && !ds.enabled) return false;
+      if (state.accountFilter === 'healthy' && !ds.healthy) return false;
+      if (state.accountFilter === 'error' && !ds.hasError) return false;
+      if (state.accountFilter === 'cookie-missing' && ds.hasCookie) return false;
+      return true;
+    }
+    function filteredAccountIndexes() {
+      return state.accounts.map((acc, index) => ({ acc, index })).filter(({ acc }) => accountMatchesFilter(acc));
+    }
+    function accountBadges(acc) {
+      const ds = accountDerivedStatus(acc);
+      return [
+        `<span class="mini-badge ${ds.hasCookie ? 'ok' : 'bad'}">${ds.hasCookie ? '有 cookie' : '缺少 cookie'}</span>`,
+        `<span class="mini-badge ${ds.enabled ? 'ok' : 'warn'}">${ds.enabled ? '已启用' : '已停用'}</span>`,
+        `<span class="mini-badge ${ds.healthy ? 'ok' : 'warn'}">${ds.healthy ? 'upstream 健康' : 'upstream 异常'}</span>`,
+        `<span class="mini-badge ${ds.hasError ? 'bad' : 'ok'}">${ds.hasError ? '最近报错' : '最近正常'}</span>`
+      ].join('');
+    }
     function renderAccountList() {
       const list = $('accountList');
-      $('accountListMeta').textContent = `${state.accounts.length} 个账号`;
+      const matches = filteredAccountIndexes();
+      $('accountListMeta').textContent = `${matches.length} / ${state.accounts.length} 个账号`;
       if (!state.accounts.length) {
         list.innerHTML = '<div class="empty">还没有账号。点击“新增账号”创建第一个账号。</div>';
         return;
       }
+      if (!matches.length) {
+        list.innerHTML = '<div class="empty">没有匹配的账号，试试清空搜索或切换筛选条件。</div>';
+        return;
+      }
       ensureSelectedAccount();
-      list.innerHTML = state.accounts.map((acc, index) => `
+      if (!matches.some(item => item.index === state.selectedAccountIndex)) {
+        state.selectedAccountIndex = matches[0].index;
+      }
+      list.innerHTML = matches.map(({ acc, index }, visibleIndex) => `
         <div class="account-list-item ${index === state.selectedAccountIndex ? 'active' : ''}" data-account-select="${index}">
-          <div class="title">${escapeHtml(acc.name || acc.id || `账号 ${index + 1}`)}</div>
-          <div class="meta mono">${escapeHtml(acc.id || '-')}</div>
-          <div class="meta">优先级 ${escapeHtml(acc.priority ?? 100)} · ${acc.enabled !== false ? '已启用' : '已停用'}</div>
+          <div class="row">
+            <div>
+              <div class="title">${escapeHtml(acc.name || acc.id || `账号 ${index + 1}`)}</div>
+              <div class="meta mono">${escapeHtml(acc.id || '-')}</div>
+            </div>
+            <div class="inline-actions">
+              <button class="secondary-btn" data-list-action="move-up" data-index="${index}" ${visibleIndex === 0 ? 'disabled' : ''}>上移</button>
+              <button class="secondary-btn" data-list-action="move-down" data-index="${index}" ${visibleIndex === matches.length - 1 ? 'disabled' : ''}>下移</button>
+            </div>
+          </div>
+          <div class="meta">优先级 ${escapeHtml(acc.priority ?? 100)}</div>
+          <div class="badge-row">${accountBadges(acc)}</div>
         </div>
       `).join('');
     }
@@ -471,6 +549,26 @@
         </div>
       `;
     }
+    function reindexPriorities() {
+      state.accounts = state.accounts.map((acc, index) => ({ ...acc, priority: 100 + index }));
+    }
+    function moveAccount(index, direction) {
+      const matches = filteredAccountIndexes();
+      const pos = matches.findIndex(item => item.index === index);
+      if (pos < 0) return;
+      const neighbor = matches[pos + direction];
+      if (!neighbor) return;
+      const targetIndex = neighbor.index;
+      const copy = [...state.accounts];
+      const [item] = copy.splice(index, 1);
+      copy.splice(targetIndex, 0, item);
+      state.accounts = copy;
+      state.selectedAccountIndex = targetIndex;
+      reindexPriorities();
+      state.dirty = true;
+      renderAccountEditor();
+      showAccountsBanner('已调整账号顺序，记得保存。', 'ok');
+    }
     function syncSelectedAccountFromDom() {
       if (!state.accounts.length) return;
       ensureSelectedAccount();
@@ -508,6 +606,7 @@
         if (action === 'remove') {
           state.accounts.splice(index, 1);
           state.selectedAccountIndex = Math.max(0, index - 1);
+          reindexPriorities();
           state.dirty = true;
           renderAccountEditor();
           showAccountsBanner('已删除一条账号草稿，记得保存。', 'ok');
@@ -520,17 +619,47 @@
           source.cookie = '';
           state.accounts.splice(index + 1, 0, source);
           state.selectedAccountIndex = index + 1;
+          reindexPriorities();
           state.dirty = true;
           renderAccountEditor();
           showAccountsBanner('已复制账号草稿，新的副本需要你确认 ID。', 'ok');
         }
       });
       $('accountList').addEventListener('click', (event) => {
+        const actionTarget = event.target.closest('[data-list-action]');
+        if (actionTarget) {
+          event.stopPropagation();
+          syncSelectedAccountFromDom();
+          const index = Number(actionTarget.dataset.index || 0);
+          const action = actionTarget.dataset.listAction;
+          if (action === 'move-up') moveAccount(index, -1);
+          if (action === 'move-down') moveAccount(index, 1);
+          return;
+        }
         const target = event.target.closest('[data-account-select]');
         if (!target) return;
         syncSelectedAccountFromDom();
         state.selectedAccountIndex = Number(target.dataset.accountSelect || 0);
         renderAccountEditor();
+      });
+      $('accountSearchInput').addEventListener('input', (event) => {
+        state.accountSearch = event.target.value || '';
+        renderAccountEditor();
+      });
+      $('accountFilterSelect').addEventListener('change', (event) => {
+        state.accountFilter = event.target.value || 'all';
+        renderAccountEditor();
+      });
+      $('helpBtn').addEventListener('click', (event) => {
+        event.stopPropagation();
+        state.helpOpen = !state.helpOpen;
+        $('helpPopover').classList.toggle('open', state.helpOpen);
+      });
+      document.addEventListener('click', (event) => {
+        if (!state.helpOpen) return;
+        if (event.target.closest('#helpPopover') || event.target.closest('#helpBtn')) return;
+        state.helpOpen = false;
+        $('helpPopover').classList.remove('open');
       });
     }
     async function fetchJson(url) {
@@ -659,7 +788,9 @@
       const upstreams = Array.isArray(data.registry?.upstreams) ? [...data.registry.upstreams] : [];
       const states = Array.isArray(data.states) ? data.states : [];
       const stateMap = new Map(states.map(s => [s.accountId, s]));
+      state.stateMap = stateMap;
       upstreams.sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
+      state.upstreamMap = new Map(upstreams.map(u => [u.accountId, u]));
 
       $('configuredAccounts').textContent = String(data.summary?.configuredAccounts ?? 0);
       $('healthyCount').textContent = String(data.summary?.healthyUpstreams ?? 0);
@@ -712,6 +843,7 @@
       state.accounts = current;
       state.accounts.push(accountTemplate(state.accounts.length));
       state.selectedAccountIndex = state.accounts.length - 1;
+      reindexPriorities();
       state.dirty = true;
       renderAccountEditor();
       showAccountsBanner('已新增一个账号草稿，记得保存。', 'ok');
