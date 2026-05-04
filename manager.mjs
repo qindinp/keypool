@@ -86,7 +86,9 @@ async function syncRegistryForRuntime(rt, registry) {
     lastError = e.message;
   }
 
-  const baseUrl = state.currentShareUrl || state.currentLocalUrl || null;
+  const shareUrl = state.currentShareUrl || null;
+  const localUrl = state.currentLocalUrl || 'http://127.0.0.1:9200';
+  const baseUrl = shareUrl;
   const endpointHealth = await computeEndpointHealth(baseUrl);
   const healthy = instanceStatus === 'AVAILABLE' && endpointHealth.healthy;
 
@@ -96,8 +98,8 @@ async function syncRegistryForRuntime(rt, registry) {
     userId: rt.auth?.userId || null,
     userName: rt.auth?.userName || null,
     baseUrl,
-    shareUrl: state.currentShareUrl || null,
-    localUrl: state.currentLocalUrl || 'http://127.0.0.1:9200',
+    shareUrl,
+    localUrl,
     healthy,
     priority: rt.account.priority,
     tags: rt.account.tags || [],
