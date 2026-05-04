@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createRegistry } from '../controller/registry.mjs';
 import { getAccountsPath, loadAccounts } from '../controller/accounts.mjs';
 import { createConfig } from '../controller/config.mjs';
@@ -27,6 +27,7 @@ const adminHtmlPath = resolve(__dirname, 'admin.html');
 const rootDir = resolve(__dirname, '..');
 const managerDataDir = resolve(rootDir, '.manager');
 const accountsPath = getAccountsPath();
+const appBgScriptPath = resolve(rootDir, 'scripts', 'app-bg.mjs');
 
 const managerControl = {
   child: null,
@@ -105,6 +106,35 @@ function stopManagerProcess() {
 async function restartManagerProcess() {
   await stopManagerProcess();
   return startManagerProcess();
+}
+
+function runAppBgCommand(command) {
+  const result = spawnSync(process.execPath, [appBgScriptPath, command], {
+    cwd: rootDir,
+    env: { ...process.env },
+    encoding: 'utf-8',
+    windowsHide: true,
+  });
+
+  const stdout = result.stdout || '';
+  const stderr = result.stderr || '';
+  const body = safeJsonParse(stdout, null);
+  if (result.status !== 0 || !body) {
+    throw new Error((stderr || stdout || `app-bg ${command} 执行失败`).trim());
+  }
+  return body;
+}
+
+function appStatus() {
+  return runAppBgCommand('status');
+}
+
+function startAppProcess() {
+  return runAppBgCommand('start');
+}
+
+function stopAppProcess() {
+  return runAppBgCommand('stop');
 }
 
 function sendJson(res, statusCode, payload) {
@@ -433,6 +463,13 @@ function buildOverview() {
   return {
     generatedAt: new Date().toISOString(),
     manager: managerStatus(),
+    appControl: (() => {
+      try {
+        return appStatus();
+      } catch (error) {
+        return { ok: false, running: false, error: error.message };
+      }
+    })(),
     relay: {
       host,
       port,
@@ -707,7 +744,31 @@ async function handleControlApi(req, res, url) {
     return sendJson(res, 200, await restartManagerProcess());
   }
 
-  return sendJson(res, 404, { error: 'not_found', message: '支持的控制路径: /api/control/status /api/control/start /api/control/stop /api/control/retry' });
+  if (url.pathname === '/api/control/app/status' && req.method === 'GET') {
+    try {
+      return sendJson(res, 200, appStatus());
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: 'app_bg_status_failed', message: e.message });
+    }
+  }
+
+  if (url.pathname === '/api/control/app/start' && req.method === 'POST') {
+    try {
+      return sendJson(res, 200, startAppProcess());
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: 'app_bg_start_failed', message: e.message });
+    }
+  }
+
+  if (url.pathname === '/api/control/app/stop' && req.method === 'POST') {
+    try {
+      return sendJson(res, 200, stopAppProcess());
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: 'app_bg_stop_failed', message: e.message });
+    }
+  }
+
+  return sendJson(res, 404, { error: 'not_found', message: '支持的控制路径: /api/control/status /api/control/start /api/control/stop /api/control/retry /api/control/app/status /api/control/app/start /api/control/app/stop' });
 }
 
 async function handleAdminApi(req, res, url) {
@@ -802,7 +863,7 @@ const server = createServer(async (req, res) => {
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions',
+      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/control/app/status /api/control/app/start /api/control/app/stop /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });

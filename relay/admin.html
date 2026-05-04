@@ -137,7 +137,7 @@
     <div class="hero">
       <div>
         <h1>KeyPool 图形化控制台</h1>
-        <div class="sub">不仅能看状态，还能直接管理账号配置、保存并让后台生效。</div>
+        <div class="sub">不仅能看状态,还能直接管理账号配置、保存并让后台生效。</div>
         <div class="address-box">
           <div>
             <div class="metric-label">推荐接入地址</div>
@@ -151,9 +151,11 @@
         </div>
       </div>
       <div class="toolbar">
-        <button id="startBtn" class="primary-btn">启动</button>
-        <button id="stopBtn" class="danger-btn">停止</button>
-        <button id="retryBtn" class="secondary-btn">重试</button>
+        <button id="startBtn" class="primary-btn">启动同步</button>
+        <button id="stopBtn" class="danger-btn">停止同步</button>
+        <button id="retryBtn" class="secondary-btn">重试同步</button>
+        <button id="appStartBtn" class="primary-btn">启动后台 App</button>
+        <button id="appStopBtn" class="danger-btn">停止后台 App</button>
         <label class="status"><span class="dot" id="autoDot"></span><span>自动刷新</span></label>
         <select id="refreshMs">
           <option value="0">关闭自动刷新</option>
@@ -168,7 +170,8 @@
 
     <div class="grid">
       <div class="card"><div class="metric-label">服务状态</div><div class="metric-value" id="serviceStatus">检查中</div></div>
-      <div class="card"><div class="metric-label">后台任务</div><div class="metric-value" id="managerStatus">检查中</div></div>
+      <div class="card"><div class="metric-label">后台 App</div><div class="metric-value" id="appStatus">检查中</div></div>
+      <div class="card"><div class="metric-label">后台同步</div><div class="metric-value" id="managerStatus">检查中</div></div>
       <div class="card"><div class="metric-label">已配置账号</div><div class="metric-value" id="configuredAccounts">-</div></div>
       <div class="card"><div class="metric-label">健康连接</div><div class="metric-value" id="healthyCount">-</div></div>
       <div class="card"><div class="metric-label">异常连接</div><div class="metric-value" id="degradedCount">-</div></div>
@@ -198,7 +201,7 @@
             <div class="help-wrap">
               <button id="helpBtn" class="help-btn" title="帮助">?</button>
               <div id="helpPopover" class="help-popover">
-                <div class="tip">配置文件：<span class="mono" id="accountsPath">accounts.json</span></div>
+                <div class="tip">配置文件:<span class="mono" id="accountsPath">accounts.json</span></div>
                 <div class="tip">保存后会自动重启 manager 并生效。</div>
                 <div class="tip">新账号需填写 <span class="mono">cookie</span> 或 <span class="mono">cookieFile</span>。</div>
                 <div class="tip">留空 cookie 不会覆盖旧值。</div>
@@ -258,7 +261,7 @@
     </div>
     <div class="card">
       <div id="logBox" class="log-box"></div>
-      <div class="tip">这里只显示最近日志片段，足够判断是在等 tunnel、在恢复，还是已经拿到 shareUrl。</div>
+      <div class="tip">这里只显示最近日志片段,足够判断是在等 tunnel、在恢复,还是已经拿到 shareUrl。</div>
     </div>
   </div>
 
@@ -346,9 +349,9 @@
     }
     function renderUpstreamCard(u, linkedState) {
       const badge = statusBadge(u);
-      const cooldown = u.cooldownUntil ? `${fmtTime(u.cooldownUntil)}（${fmtRelative(u.cooldownUntil)}）` : '-';
-      const expire = u.expireTime ? `${fmtTime(u.expireTime)}（${fmtRelative(u.expireTime)}）` : '-';
-      const lastDeploy = u.lastDeployAt ? `${fmtTime(u.lastDeployAt)}（${fmtRelative(u.lastDeployAt)}）` : '-';
+      const cooldown = u.cooldownUntil ? `${fmtTime(u.cooldownUntil)}(${fmtRelative(u.cooldownUntil)})` : '-';
+      const expire = u.expireTime ? `${fmtTime(u.expireTime)}(${fmtRelative(u.expireTime)})` : '-';
+      const lastDeploy = u.lastDeployAt ? `${fmtTime(u.lastDeployAt)}(${fmtRelative(u.lastDeployAt)})` : '-';
       const tags = Array.isArray(u.tags) ? u.tags : [];
       const deployBusy = isActionBusy(u.accountId, 'deploy');
       const recoverBusy = isActionBusy(u.accountId, 'recover');
@@ -397,7 +400,7 @@
         <div class="timeline-item ${cls}">
           <div><strong>${escapeHtml(item.reason || 'unknown')}</strong></div>
           <div class="muted">${escapeHtml(fmtTime(item.at))}</div>
-          <div>结果：${item.success ? '成功' : '失败'}</div>
+          <div>结果:${item.success ? '成功' : '失败'}</div>
           <div class="mono">shareUrl: ${escapeHtml(item.shareUrl || '未获取到')}</div>
           <div class="mono">localUrl: ${escapeHtml(item.localUrl || '-')}</div>
         </div>`;
@@ -465,11 +468,11 @@
       const matches = filteredAccountIndexes();
       $('accountListMeta').textContent = `${matches.length} / ${state.accounts.length} 个账号`;
       if (!state.accounts.length) {
-        list.innerHTML = '<div class="empty">还没有账号。点击“新增账号”创建第一个账号。</div>';
+        list.innerHTML = '<div class="empty">还没有账号。点击"新增账号"创建第一个账号。</div>';
         return;
       }
       if (!matches.length) {
-        list.innerHTML = '<div class="empty">没有匹配的账号，试试清空搜索或切换筛选条件。</div>';
+        list.innerHTML = '<div class="empty">没有匹配的账号,试试清空搜索或切换筛选条件。</div>';
         return;
       }
       ensureSelectedAccount();
@@ -497,7 +500,7 @@
       const list = $('accountEditorList');
       if (!state.accounts.length) {
         $('accountListMeta').textContent = '0 个账号';
-        if ($('accountList')) $('accountList').innerHTML = '<div class="empty">还没有账号。点击“新增账号”创建第一个账号。</div>';
+        if ($('accountList')) $('accountList').innerHTML = '<div class="empty">还没有账号。点击"新增账号"创建第一个账号。</div>';
         list.innerHTML = '<div class="empty">请先新增账号。</div>';
         return;
       }
@@ -531,18 +534,18 @@
               <input type="number" data-field="priority" data-index="${index}" value="${escapeHtml(acc.priority ?? 100)}" />
             </div>
             <div class="field">
-              <label>标签（逗号分隔）</label>
+              <label>标签(逗号分隔)</label>
               <input data-field="tags" data-index="${index}" value="${escapeHtml((acc.tags || []).join(', '))}" />
             </div>
             <div class="field full">
-              <label>Cookie（留空 = 保留旧值；新增账号则必须填 cookie 或 cookieFile）</label>
-              <textarea data-field="cookie" data-index="${index}" placeholder="如果该账号以前已保存过 cookie，这里留空不会清掉旧值。"></textarea>
-              <div class="tip">当前状态：${acc.hasCookie ? '已保存 cookie（为了安全不回显）' : '未保存 cookie'}</div>
+              <label>Cookie(留空 = 保留旧值;新增账号则必须填 cookie 或 cookieFile)</label>
+              <textarea data-field="cookie" data-index="${index}" placeholder="如果该账号以前已保存过 cookie,这里留空不会清掉旧值。"></textarea>
+              <div class="tip">当前状态:${acc.hasCookie ? '已保存 cookie(为了安全不回显)' : '未保存 cookie'}</div>
             </div>
             <div class="field full">
-              <label>Cookie 文件路径（相对 keypool 项目目录）</label>
+              <label>Cookie 文件路径(相对 keypool 项目目录)</label>
               <input data-field="cookieFile" data-index="${index}" value="${escapeHtml(acc.cookieFile || '')}" placeholder="例如 cookies/account-a.txt" />
-              <div class="tip">当前状态：${acc.hasCookieFile ? `已设置 cookieFile：${escapeHtml(acc.cookieFile)}` : '未设置 cookieFile'}</div>
+              <div class="tip">当前状态:${acc.hasCookieFile ? `已设置 cookieFile:${escapeHtml(acc.cookieFile)}` : '未设置 cookieFile'}</div>
             </div>
             <div class="field full">
               <label class="toggle-row"><input type="checkbox" data-field="enabled" data-index="${index}" ${acc.enabled !== false ? 'checked' : ''} /> 启用这个账号</label>
@@ -569,7 +572,7 @@
       reindexPriorities();
       state.dirty = true;
       renderAccountEditor();
-      showAccountsBanner('已调整账号顺序，记得保存。', 'ok');
+      showAccountsBanner('已调整账号顺序,记得保存。', 'ok');
     }
     function syncSelectedAccountFromDom() {
       if (!state.accounts.length) return;
@@ -611,7 +614,7 @@
           reindexPriorities();
           state.dirty = true;
           renderAccountEditor();
-          showAccountsBanner('已删除一条账号草稿，记得保存。', 'ok');
+          showAccountsBanner('已删除一条账号草稿,记得保存。', 'ok');
           return;
         }
         if (action === 'clone') {
@@ -624,7 +627,7 @@
           reindexPriorities();
           state.dirty = true;
           renderAccountEditor();
-          showAccountsBanner('已复制账号草稿，新的副本需要你确认 ID。', 'ok');
+          showAccountsBanner('已复制账号草稿,新的副本需要你确认 ID。', 'ok');
         }
       });
       $('accountList').addEventListener('click', (event) => {
@@ -685,7 +688,7 @@
     }
     async function copyText(text, successText) {
       try { await navigator.clipboard.writeText(text); alert(successText); }
-      catch { alert(`复制失败，请手动复制：\n${text}`); }
+      catch { alert(`复制失败,请手动复制:\n${text}`); }
     }
     function applyAutoRefresh() {
       if (state.timer) clearInterval(state.timer);
@@ -699,7 +702,7 @@
       if (state.dirty && !force) return;
       const result = await fetchJson('/api/admin/accounts');
       if (!result.ok || !result.body) {
-        showAccountsBanner(`读取账号配置失败：HTTP ${result.status}`, 'bad');
+        showAccountsBanner(`读取账号配置失败:HTTP ${result.status}`, 'bad');
         return;
       }
       state.accounts = Array.isArray(result.body.accounts) ? result.body.accounts : [];
@@ -708,14 +711,14 @@
       $('accountsPath').textContent = state.accountsPath || 'accounts.json';
       state.dirty = false;
       renderAccountEditor();
-      showAccountsBanner(result.body.exists ? '已加载当前账号配置。' : '当前还没有 accounts.json，保存时会自动创建。', 'ok');
+      showAccountsBanner(result.body.exists ? '已加载当前账号配置。' : '当前还没有 accounts.json,保存时会自动创建。', 'ok');
     }
     async function saveAccounts() {
       const accounts = collectAccountsFromDom();
       const result = await postJson('/api/admin/accounts', { accounts, restartManager: true });
       if (!result.ok || !result.body) {
         const message = result.body?.message || result.text || `HTTP ${result.status}`;
-        showAccountsBanner(`保存失败：${message}`, 'bad');
+        showAccountsBanner(`保存失败:${message}`, 'bad');
         return;
       }
       state.accounts = Array.isArray(result.body.accounts) ? result.body.accounts : accounts;
@@ -724,7 +727,7 @@
       $('accountsPath').textContent = state.accountsPath || 'accounts.json';
       state.dirty = false;
       renderAccountEditor();
-      showAccountsBanner(`保存成功，已写入 ${result.body.count} 个账号，并自动重启 manager。`, 'ok');
+      showAccountsBanner(`保存成功,已写入 ${result.body.count} 个账号,并自动重启 manager。`, 'ok');
       await refreshAll();
     }
     async function runUpstreamAction(accountId, action) {
@@ -733,26 +736,26 @@
       state.busyActions.add(key);
       const actionTextMap = { deploy: '立即部署', recover: '立即恢复', destroy: '销毁实例' };
       const actionText = actionTextMap[action] || action;
-      setActionStatus(accountId, 'warn', `${actionText} 已发出，正在执行...`);
+      setActionStatus(accountId, 'warn', `${actionText} 已发出,正在执行...`);
       try {
         $('controlTip').textContent = `正在对 ${accountId} 执行 ${actionText}...`;
         await refreshAll();
         const result = await postJson(`/api/admin/accounts/${encodeURIComponent(accountId)}/${action}`);
         if (!result.ok || !result.body?.ok) {
           const message = result.body?.message || result.text || `HTTP ${result.status}`;
-          setActionStatus(accountId, 'bad', `${actionText} 失败：${message}`);
+          setActionStatus(accountId, 'bad', `${actionText} 失败:${message}`);
           $('controlTip').textContent = `${accountId} ${actionText}失败`;
         } else {
           let summary = '操作已完成';
           if (action === 'destroy') {
-            summary = '实例已请求销毁，稍后刷新可看到最新状态';
+            summary = '实例已请求销毁,稍后刷新可看到最新状态';
           } else if (result.body?.state?.currentShareUrl) {
             summary = `已获取分享地址 ${result.body.state.currentShareUrl}`;
           } else if (result.body?.state?.currentLocalUrl) {
             summary = `本地地址 ${result.body.state.currentLocalUrl}`;
           }
           const kind = action === 'destroy' ? 'warn' : (result.body?.state?.currentShareUrl ? 'ok' : 'warn');
-          setActionStatus(accountId, kind, `${actionText} 完成：${summary}`);
+          setActionStatus(accountId, kind, `${actionText} 完成:${summary}`);
           $('controlTip').textContent = `${accountId} ${actionText}完成`;
         }
       } finally {
@@ -764,30 +767,35 @@
       const origin = window.location.origin;
       const accessUrl = `${origin}/v1`;
       $('accessUrl').textContent = accessUrl;
-      const [health, overview, control] = await Promise.all([
+      const [health, overview, control, appControl] = await Promise.all([
         fetchJson('/health'),
         fetchJson('/api/admin/overview'),
-        fetchJson('/api/control/status')
+        fetchJson('/api/control/status'),
+        fetchJson('/api/control/app/status')
       ]);
       $('relayDot').className = `dot ${health.ok ? 'ok' : 'bad'}`;
       $('relayText').textContent = health.ok
         ? `服务正常（可用连接 ${health.body?.healthyUpstreams ?? 0}）`
         : `当前不可用（HTTP ${health.status}）`;
       $('serviceStatus').textContent = health.ok ? '可用' : '恢复中';
+      $('appStatus').textContent = appControl.body?.running ? '常驻中' : '未启动';
       $('managerStatus').textContent = control.body?.running ? '已启动' : '未启动';
-      $('controlTip').textContent = control.body?.running
-        ? `后台同步正在运行（PID ${control.body?.pid ?? '-'}）`
-        : '后台同步当前未运行，可点击“启动”或“重试”';
+      $('controlTip').textContent = appControl.body?.running
+        ? `后台 App 常驻中（PID ${appControl.body?.pid ?? '-' }）`
+        : (control.body?.running
+          ? `后台同步正在运行（PID ${control.body?.pid ?? '-'})`
+          : '后台当前未运行，可点击“启动后台 App”或“启动同步”');
 
       if (!overview.ok || !overview.body) {
         $('configuredAccounts').textContent = '0';
+        $('appStatus').textContent = appControl.body?.running ? '常驻中' : '未启动';
         $('healthyCount').textContent = '0';
         $('degradedCount').textContent = '0';
         $('missingShareUrlCount').textContent = '0';
         $('primaryName').textContent = '-';
         $('updatedAt').textContent = '-';
         $('listMeta').textContent = '读取总览失败';
-        $('upstreamList').innerHTML = `<div class="empty">读取 /api/admin/overview 失败：HTTP ${overview.status}</div>`;
+        $('upstreamList').innerHTML = `<div class="empty">读取 /api/admin/overview 失败:HTTP ${overview.status}</div>`;
         $('renewTimeline').innerHTML = '<div class="empty">暂无恢复记录</div>';
         $('logBox').innerHTML = '';
         return;
@@ -811,7 +819,7 @@
 
       $('upstreamList').innerHTML = upstreams.length
         ? upstreams.map(u => renderUpstreamCard(u, stateMap.get(u.accountId))).join('')
-        : '<div class="empty">当前还没有可用连接，请先启动后台服务并等待同步完成。</div>';
+        : '<div class="empty">当前还没有可用连接,请先启动后台服务并等待同步完成。</div>';
 
       const renewItems = states.flatMap(s => (Array.isArray(s.recentRenewals) ? s.recentRenewals.map(item => ({ ...item, accountId: s.accountId })) : []))
         .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
@@ -847,6 +855,8 @@
     $('startBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在启动后台同步服务...'; await postJson('/api/control/start'); await refreshAll(); });
     $('stopBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在停止后台同步服务...'; await postJson('/api/control/stop'); await refreshAll(); });
     $('retryBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在重试后台同步服务...'; await postJson('/api/control/retry'); await refreshAll(); });
+    $('appStartBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在启动后台 App...'; await postJson('/api/control/app/start'); await refreshAll(); });
+    $('appStopBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在停止后台 App...'; await postJson('/api/control/app/stop'); await refreshAll(); });
     $('addAccountBtn').addEventListener('click', () => {
       const current = collectAccountsFromDom();
       state.accounts = current;
@@ -855,7 +865,7 @@
       reindexPriorities();
       state.dirty = true;
       renderAccountEditor();
-      showAccountsBanner('已新增一个账号草稿，记得保存。', 'ok');
+      showAccountsBanner('已新增一个账号草稿,记得保存。', 'ok');
     });
     $('saveAccountsBtn').addEventListener('click', saveAccounts);
     $('upstreamList').addEventListener('click', (event) => {
