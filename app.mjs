@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const relayPort = process.env.RELAY_PORT || '9300';
 const relayHost = process.env.RELAY_HOST || '127.0.0.1';
 const adminUrl = `http://${relayHost}:${relayPort}/admin`;
+const RESTART_DELAY_MS = 1500;
 
 function startChild(name, args, extraEnv = {}) {
   const child = spawn(process.execPath, args, {
@@ -29,6 +30,16 @@ function startChild(name, args, extraEnv = {}) {
   return child;
 }
 
+function createManagedChild(name, args, extraEnv = {}) {
+  return {
+    name,
+    args,
+    extraEnv,
+    child: null,
+    restartCount: 0,
+  };
+}
+
 async function waitForHealth(url, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -43,33 +54,54 @@ async function waitForHealth(url, timeoutMs = 15000) {
 }
 
 async function main() {
-  console.log('🚀 正在启动 KeyPool 用户入口...');
-  console.log('   - 后台服务 1/2: manager');
-  const manager = startChild('manager', ['manager.mjs']);
-
-  await sleep(800);
-
-  console.log('   - 后台服务 2/2: relay');
-  const relay = startChild('relay', ['relay/server.mjs'], {
-    RELAY_PORT: String(relayPort),
-    RELAY_HOST: relayHost,
-  });
-
-  const children = [manager, relay];
+  const managedChildren = [
+    createManagedChild('manager', ['manager.mjs']),
+    createManagedChild('relay', ['relay/server.mjs'], {
+      RELAY_PORT: String(relayPort),
+      RELAY_HOST: relayHost,
+    }),
+  ];
   let shuttingDown = false;
+
+  const launchChild = (managed) => {
+    if (shuttingDown) return;
+    const child = startChild(managed.name, managed.args, managed.extraEnv);
+    managed.child = child;
+
+    child.once('exit', async () => {
+      managed.child = null;
+      if (shuttingDown) return;
+      managed.restartCount += 1;
+      process.stdout.write(`[${managed.name}] 将在 ${RESTART_DELAY_MS}ms 后自动重启（第 ${managed.restartCount} 次）\n`);
+      await sleep(RESTART_DELAY_MS);
+      if (!shuttingDown) launchChild(managed);
+    });
+  };
 
   const shutdown = (sig) => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`\n🛑 收到 ${sig}，正在停止 KeyPool...`);
-    for (const child of children) {
-      if (!child.killed) child.kill('SIGTERM');
+    for (const managed of managedChildren) {
+      const child = managed.child;
+      if (child && !child.killed) {
+        try { child.kill('SIGTERM'); } catch {}
+      }
     }
     setTimeout(() => process.exit(0), 800);
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  console.log('🚀 正在启动 KeyPool 用户入口...');
+  console.log('   - 后台服务 1/2: manager');
+  launchChild(managedChildren[0]);
+
+  await sleep(800);
+
+  console.log('   - 后台服务 2/2: relay');
+  launchChild(managedChildren[1]);
 
   const ready = await waitForHealth(`http://${relayHost}:${relayPort}/health`);
   if (ready) {
@@ -82,8 +114,7 @@ async function main() {
     console.log(`🌐 你仍可稍后手动打开: ${adminUrl}`);
   }
 
-  await Promise.race(children.map(child => new Promise(resolve => child.on('exit', resolve))));
-  shutdown('child-exit');
+  await new Promise(() => {});
 }
 
 main().catch((error) => {
