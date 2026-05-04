@@ -6,6 +6,7 @@ const relayPort = process.env.RELAY_PORT || '9300';
 const relayHost = process.env.RELAY_HOST || '127.0.0.1';
 const adminUrl = `http://${relayHost}:${relayPort}/admin`;
 const RESTART_DELAY_MS = 1500;
+const relayHealthUrl = `http://${relayHost}:${relayPort}/health`;
 
 function startChild(name, args, extraEnv = {}) {
   const child = spawn(process.execPath, args, {
@@ -54,13 +55,12 @@ async function waitForHealth(url, timeoutMs = 15000) {
 }
 
 async function main() {
-  const managedChildren = [
-    createManagedChild('manager', ['manager.mjs']),
-    createManagedChild('relay', ['relay/server.mjs'], {
-      RELAY_PORT: String(relayPort),
-      RELAY_HOST: relayHost,
-    }),
-  ];
+  const managerChild = createManagedChild('manager', ['manager.mjs']);
+  const relayChild = createManagedChild('relay', ['relay/server.mjs'], {
+    RELAY_PORT: String(relayPort),
+    RELAY_HOST: relayHost,
+  });
+  const managedChildren = [managerChild];
   let shuttingDown = false;
 
   const launchChild = (managed) => {
@@ -96,19 +96,27 @@ async function main() {
 
   console.log('🚀 正在启动 KeyPool 用户入口...');
   console.log('   - 后台服务 1/2: manager');
-  launchChild(managedChildren[0]);
+  launchChild(managerChild);
 
   await sleep(800);
 
-  console.log('   - 后台服务 2/2: relay');
-  launchChild(managedChildren[1]);
+  const reuseExistingRelay = await waitForHealth(relayHealthUrl, 1200);
+  if (reuseExistingRelay) {
+    console.log('   - 后台服务 2/2: relay（复用当前 9300 服务）');
+  } else {
+    console.log('   - 后台服务 2/2: relay');
+    managedChildren.push(relayChild);
+    launchChild(relayChild);
+  }
 
-  const ready = await waitForHealth(`http://${relayHost}:${relayPort}/health`);
+  const ready = await waitForHealth(relayHealthUrl);
   if (ready) {
     console.log('\n✅ KeyPool 已启动');
     console.log(`🌐 管理界面: ${adminUrl}`);
     console.log(`🔌 接入地址: http://${relayHost}:${relayPort}/v1`);
-    console.log('ℹ️  关闭窗口或按 Ctrl+C 可停止全部服务');
+    console.log(reuseExistingRelay
+      ? 'ℹ️  已复用现有 relay；关闭当前 admin 所在 relay 会影响访问。'
+      : 'ℹ️  关闭窗口或按 Ctrl+C 可停止全部服务');
   } else {
     console.log('\n⚠️ relay 启动超时，但进程可能仍在初始化');
     console.log(`🌐 你仍可稍后手动打开: ${adminUrl}`);
