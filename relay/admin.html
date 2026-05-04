@@ -92,6 +92,10 @@
     .toggle-row input { width: auto; }
     .inline-actions { display:flex; flex-wrap:wrap; gap:10px; }
     .card-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top: 14px; }
+    .action-status { margin-top: 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); font-size: 13px; }
+    .action-status.ok { background: rgba(37,194,129,.10); border-color: rgba(37,194,129,.35); }
+    .action-status.warn { background: rgba(245,185,66,.10); border-color: rgba(245,185,66,.35); }
+    .action-status.bad { background: rgba(255,107,107,.10); border-color: rgba(255,107,107,.35); }
     .banner { margin-top: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); }
     .banner.ok { background: rgba(37,194,129,.12); border-color: rgba(37,194,129,.35); }
     .banner.bad { background: rgba(255,107,107,.12); border-color: rgba(255,107,107,.35); }
@@ -229,6 +233,7 @@
       accountsPath: '',
       dirty: false,
       busyActions: new Set(),
+      actionStatus: {},
     };
 
     function fmtTime(value) {
@@ -284,6 +289,16 @@
     function isActionBusy(accountId, action) {
       return state.busyActions.has(actionKey(accountId, action));
     }
+    function actionStatusFor(accountId) {
+      return state.actionStatus[accountId] || null;
+    }
+    function setActionStatus(accountId, kind, message) {
+      state.actionStatus[accountId] = {
+        kind,
+        message,
+        at: new Date().toISOString(),
+      };
+    }
     function renderUpstreamCard(u, linkedState) {
       const badge = statusBadge(u);
       const cooldown = u.cooldownUntil ? `${fmtTime(u.cooldownUntil)}（${fmtRelative(u.cooldownUntil)}）` : '-';
@@ -292,6 +307,7 @@
       const tags = Array.isArray(u.tags) ? u.tags : [];
       const deployBusy = isActionBusy(u.accountId, 'deploy');
       const recoverBusy = isActionBusy(u.accountId, 'recover');
+      const actionStatus = actionStatusFor(u.accountId);
       return `
         <div class="upstream-card">
           <div class="row">
@@ -325,6 +341,7 @@
             <button class="primary-btn" data-upstream-action="deploy" data-account-id="${escapeHtml(u.accountId || '')}" ${deployBusy ? 'disabled' : ''}>${deployBusy ? '部署中...' : '立即部署'}</button>
             <button class="secondary-btn" data-upstream-action="recover" data-account-id="${escapeHtml(u.accountId || '')}" ${recoverBusy ? 'disabled' : ''}>${recoverBusy ? '恢复中...' : '立即恢复'}</button>
           </div>
+          ${actionStatus ? `<div class="action-status ${escapeHtml(actionStatus.kind)}"><strong>${escapeHtml(fmtTime(actionStatus.at))}</strong> · ${escapeHtml(actionStatus.message)}</div>` : ''}
         </div>`;
     }
     function renderRenewItem(item) {
@@ -511,15 +528,22 @@
       const key = actionKey(accountId, action);
       if (state.busyActions.has(key)) return;
       state.busyActions.add(key);
+      const actionText = action === 'deploy' ? '立即部署' : '立即恢复';
+      setActionStatus(accountId, 'warn', `${actionText} 已发出，正在执行...`);
       try {
-        $('controlTip').textContent = `正在对 ${accountId} 执行 ${action === 'deploy' ? '立即部署' : '立即恢复'}...`;
+        $('controlTip').textContent = `正在对 ${accountId} 执行 ${actionText}...`;
         await refreshAll();
         const result = await postJson(`/api/admin/accounts/${encodeURIComponent(accountId)}/${action}`);
         if (!result.ok || !result.body?.ok) {
           const message = result.body?.message || result.text || `HTTP ${result.status}`;
-          alert(`操作失败：${message}`);
+          setActionStatus(accountId, 'bad', `${actionText} 失败：${message}`);
+          $('controlTip').textContent = `${accountId} ${actionText}失败`;
         } else {
-          alert(`${accountId} ${action === 'deploy' ? '立即部署' : '立即恢复'} 已执行完成`);
+          const summary = result.body?.state?.currentShareUrl
+            ? `已获取分享地址 ${result.body.state.currentShareUrl}`
+            : (result.body?.state?.currentLocalUrl ? `本地地址 ${result.body.state.currentLocalUrl}` : '操作已完成');
+          setActionStatus(accountId, result.body?.state?.currentShareUrl ? 'ok' : 'warn', `${actionText} 完成：${summary}`);
+          $('controlTip').textContent = `${accountId} ${actionText}完成`;
         }
       } finally {
         state.busyActions.delete(key);
