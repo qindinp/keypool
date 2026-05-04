@@ -45,6 +45,7 @@
     button { cursor: pointer; }
     textarea { min-height: 92px; resize: vertical; }
     button:hover { filter: brightness(1.08); }
+    button:disabled { opacity: .55; cursor: wait; filter: none; }
     .primary-btn { background: linear-gradient(135deg, #2b7fff, #5b9dff); color: #fff; }
     .danger-btn { background: linear-gradient(135deg, #b83e4b, #db5e6a); color: #fff; }
     .secondary-btn { background: rgba(255,255,255,.04); }
@@ -90,6 +91,7 @@
     .toggle-row { display:flex; align-items:center; gap:8px; }
     .toggle-row input { width: auto; }
     .inline-actions { display:flex; flex-wrap:wrap; gap:10px; }
+    .card-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top: 14px; }
     .banner { margin-top: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); }
     .banner.ok { background: rgba(37,194,129,.12); border-color: rgba(37,194,129,.35); }
     .banner.bad { background: rgba(255,107,107,.12); border-color: rgba(255,107,107,.35); }
@@ -171,6 +173,7 @@
         <div class="tip">支持两种方式：</div>
         <div class="tip">- 直接填写 cookie</div>
         <div class="tip">- 填写 cookieFile（相对项目目录）</div>
+        <div class="tip">每个实例卡片现在也支持“立即部署 / 立即恢复”。</div>
         <div class="tip">如果你不想在页面显示旧 cookie，系统会保留已有值；只有你重新填写时才会覆盖。</div>
       </div>
     </div>
@@ -225,6 +228,7 @@
       accounts: [],
       accountsPath: '',
       dirty: false,
+      busyActions: new Set(),
     };
 
     function fmtTime(value) {
@@ -274,12 +278,20 @@
       }
       box.innerHTML = `<div class="banner ${kind}">${escapeHtml(message)}</div>`;
     }
+    function actionKey(accountId, action) {
+      return `${accountId}::${action}`;
+    }
+    function isActionBusy(accountId, action) {
+      return state.busyActions.has(actionKey(accountId, action));
+    }
     function renderUpstreamCard(u, linkedState) {
       const badge = statusBadge(u);
       const cooldown = u.cooldownUntil ? `${fmtTime(u.cooldownUntil)}（${fmtRelative(u.cooldownUntil)}）` : '-';
       const expire = u.expireTime ? `${fmtTime(u.expireTime)}（${fmtRelative(u.expireTime)}）` : '-';
       const lastDeploy = u.lastDeployAt ? `${fmtTime(u.lastDeployAt)}（${fmtRelative(u.lastDeployAt)}）` : '-';
       const tags = Array.isArray(u.tags) ? u.tags : [];
+      const deployBusy = isActionBusy(u.accountId, 'deploy');
+      const recoverBusy = isActionBusy(u.accountId, 'recover');
       return `
         <div class="upstream-card">
           <div class="row">
@@ -308,6 +320,10 @@
             <div class="k">最近成功</div><div class="v">${escapeHtml(fmtTime(u.lastOkAt))}</div>
             <div class="k">最近错误</div><div class="v">${escapeHtml(u.lastError || linkedState?.lastHealthError || '-')}</div>
             <div class="k">状态文件</div><div class="v mono">${escapeHtml(linkedState?.file || '-')}</div>
+          </div>
+          <div class="card-actions">
+            <button class="primary-btn" data-upstream-action="deploy" data-account-id="${escapeHtml(u.accountId || '')}" ${deployBusy ? 'disabled' : ''}>${deployBusy ? '部署中...' : '立即部署'}</button>
+            <button class="secondary-btn" data-upstream-action="recover" data-account-id="${escapeHtml(u.accountId || '')}" ${recoverBusy ? 'disabled' : ''}>${recoverBusy ? '恢复中...' : '立即恢复'}</button>
           </div>
         </div>`;
     }
@@ -423,7 +439,6 @@
           source.id = `${source.id || 'account'}-copy`;
           source.name = `${source.name || source.id || '账号'} 副本`;
           source.cookie = '';
-          source.hasCookie = source.hasCookie;
           state.accounts.splice(index + 1, 0, source);
           state.dirty = true;
           renderAccountEditor();
@@ -491,6 +506,25 @@
       renderAccountEditor();
       showAccountsBanner(`保存成功，已写入 ${result.body.count} 个账号，并自动重启 manager。`, 'ok');
       await refreshAll();
+    }
+    async function runUpstreamAction(accountId, action) {
+      const key = actionKey(accountId, action);
+      if (state.busyActions.has(key)) return;
+      state.busyActions.add(key);
+      try {
+        $('controlTip').textContent = `正在对 ${accountId} 执行 ${action === 'deploy' ? '立即部署' : '立即恢复'}...`;
+        await refreshAll();
+        const result = await postJson(`/api/admin/accounts/${encodeURIComponent(accountId)}/${action}`);
+        if (!result.ok || !result.body?.ok) {
+          const message = result.body?.message || result.text || `HTTP ${result.status}`;
+          alert(`操作失败：${message}`);
+        } else {
+          alert(`${accountId} ${action === 'deploy' ? '立即部署' : '立即恢复'} 已执行完成`);
+        }
+      } finally {
+        state.busyActions.delete(key);
+        await refreshAll();
+      }
     }
     async function refreshAll() {
       const origin = window.location.origin;
@@ -585,6 +619,13 @@
       showAccountsBanner('已新增一个账号草稿，记得保存。', 'ok');
     });
     $('saveAccountsBtn').addEventListener('click', saveAccounts);
+    $('upstreamList').addEventListener('click', (event) => {
+      const target = event.target;
+      const action = target?.dataset?.upstreamAction;
+      const accountId = target?.dataset?.accountId;
+      if (!action || !accountId) return;
+      runUpstreamAction(accountId, action);
+    });
 
     bindAccountEditorEvents();
     applyAutoRefresh();

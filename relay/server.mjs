@@ -5,7 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createRegistry } from '../controller/registry.mjs';
-import { getAccountsPath } from '../controller/accounts.mjs';
+import { getAccountsPath, loadAccounts } from '../controller/accounts.mjs';
+import { createConfig } from '../controller/config.mjs';
+import { createStateStore } from '../controller/state-store.mjs';
+import { createMimoApi } from '../controller/mimo-api.mjs';
+import { createLogger } from '../controller/logger.mjs';
+import { createAccountWorker } from '../controller/account-worker.mjs';
+import { sleep } from '../controller/utils.mjs';
 import { pickUpstream, listFallbackUpstreams } from './router.mjs';
 import { proxyJson, proxyStream } from './proxy.mjs';
 
@@ -281,6 +287,54 @@ function buildStoredAccount(input, index, previousById) {
   }
 
   return stored;
+}
+
+function buildActionRuntime(account) {
+  const accountId = String(account.id).replace(/[^a-zA-Z0-9._-]+/g, '_');
+  const logPath = resolve(managerDataDir, `${accountId}.log`);
+  const statePath = resolve(managerDataDir, `${accountId}.state.json`);
+  const baseLogger = createLogger(logPath);
+  const prefixedLog = (level, ...args) => baseLogger.log(level, `[${account.name}]`, ...args);
+  const stateStore = createStateStore(statePath);
+  const api = createMimoApi({ sleep });
+  const worker = createAccountWorker({
+    cookie: account.cookie,
+    config: createConfig(),
+    api,
+    stateStore,
+    log: prefixedLog,
+  });
+  return { account, log: prefixedLog, stateStore, api, worker };
+}
+
+async function runAccountAction(accountId, action) {
+  const accounts = loadAccounts();
+  const account = accounts.find(item => String(item.id) === String(accountId));
+  if (!account) {
+    throw new Error(`未找到账号: ${accountId}`);
+  }
+
+  const runtime = buildActionRuntime(account);
+  const auth = await runtime.api.validateCookie(account.cookie);
+  if (!auth.valid) {
+    throw new Error(`账号 ${accountId} Cookie 无效: ${auth.reason}`);
+  }
+
+  if (action === 'deploy') {
+    await runtime.worker.renewFlow('admin-manual-deploy');
+  } else if (action === 'recover') {
+    await runtime.worker.recoverAvailableInstance();
+  } else {
+    throw new Error(`不支持的账号动作: ${action}`);
+  }
+
+  return {
+    ok: true,
+    accountId: account.id,
+    accountName: account.name,
+    action,
+    state: runtime.stateStore.loadState(),
+  };
 }
 
 function saveAccountsConfigFromClient(payload) {
@@ -620,6 +674,18 @@ async function handleAdminApi(req, res, url) {
     return sendJson(res, 200, loadAccountsConfigForClient());
   }
 
+  const accountActionMatch = url.pathname.match(/^\/api\/admin\/accounts\/([^/]+)\/(deploy|recover)$/);
+  if (accountActionMatch && req.method === 'POST') {
+    const [, accountIdEncoded, action] = accountActionMatch;
+    const accountId = decodeURIComponent(accountIdEncoded);
+    try {
+      const result = await runAccountAction(accountId, action);
+      return sendJson(res, 200, result);
+    } catch (e) {
+      return sendJson(res, 400, { error: 'account_action_failed', message: e.message, accountId, action });
+    }
+  }
+
   if (url.pathname === '/api/admin/accounts' && (req.method === 'POST' || req.method === 'PUT')) {
     const body = await readBody(req);
     const payload = safeJsonParse(body, null);
@@ -638,7 +704,7 @@ async function handleAdminApi(req, res, url) {
     });
   }
 
-  return sendJson(res, 404, { error: 'not_found', message: '支持的管理路径: /api/admin/overview /api/admin/logs /api/admin/accounts' });
+  return sendJson(res, 404, { error: 'not_found', message: '支持的管理路径: /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover' });
 }
 
 const server = createServer(async (req, res) => {
@@ -682,7 +748,7 @@ const server = createServer(async (req, res) => {
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/admin/overview /api/admin/logs /api/admin/accounts /health /registry /v1/models /v1/embeddings /v1/chat/completions',
+      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/retry /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /health /registry /v1/models /v1/embeddings /v1/chat/completions',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });
