@@ -114,6 +114,13 @@ async function syncRegistryForRuntime(rt, registry) {
 }
 
 async function syncRegistry(runtimes, registry) {
+  const activeAccountIds = new Set(runtimes.map(rt => rt.account.id));
+  const current = registry.load();
+  for (const upstream of current.upstreams || []) {
+    if (!activeAccountIds.has(upstream.accountId)) {
+      registry.remove(upstream.accountId);
+    }
+  }
   for (const rt of runtimes) {
     await syncRegistryForRuntime(rt, registry);
   }
