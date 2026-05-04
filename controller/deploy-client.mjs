@@ -45,6 +45,17 @@ function parseFrames(buf) {
   return { frames, remaining: buf.slice(off) };
 }
 
+function extractTextContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(block => block?.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text)
+      .join('');
+  }
+  return '';
+}
+
 export class DeployClient {
   constructor({ cookie, getTicket, config, log }) {
     this.cookie = cookie;
@@ -57,6 +68,7 @@ export class DeployClient {
     this.pending = new Map();
     this._chatResolve = null;
     this._chatReject = null;
+    this._chatMatcher = null;
   }
 
   async connect() {
@@ -111,23 +123,26 @@ export class DeployClient {
 
         if (p.state === 'final' && this._chatResolve) {
           const resolveChat = this._chatResolve;
+          const matcher = this._chatMatcher;
           this._chatResolve = null;
           this._chatReject = null;
+          this._chatMatcher = null;
           const sk = p.sessionKey || 'main';
-          this.request('chat.history', { sessionKey: sk, limit: 1 }, 15000)
+          this.request('chat.history', { sessionKey: sk, limit: 20 }, 15000)
             .then(hist => {
-              const msgs = hist?.messages || [];
-              if (msgs.length > 0) {
-                const last = msgs[msgs.length - 1];
-                const text = typeof last.content === 'string'
-                  ? last.content
-                  : Array.isArray(last.content)
-                    ? last.content.filter(b => b.type === 'text').map(b => b.text).join('')
-                    : '';
-                resolveChat(text);
-              } else {
-                resolveChat('');
-              }
+              const msgs = Array.isArray(hist?.messages) ? hist.messages : [];
+              const texts = msgs.map(msg => ({
+                role: String(msg?.role || '').toLowerCase(),
+                text: extractTextContent(msg?.content).trim(),
+              })).filter(item => item.text);
+
+              const assistantTexts = texts.filter(item => item.role === 'assistant');
+              const matching = matcher
+                ? assistantTexts.filter(item => item.text.includes(matcher)).map(item => item.text)
+                : [];
+              const fallbackAssistant = assistantTexts.map(item => item.text);
+              const fallbackAny = texts.map(item => item.text);
+              resolveChat(matching.at(-1) || fallbackAssistant.at(-1) || fallbackAny.at(-1) || '');
             })
             .catch(() => resolveChat(''));
           return;
@@ -137,6 +152,7 @@ export class DeployClient {
           const rejectChat = this._chatReject;
           this._chatResolve = null;
           this._chatReject = null;
+          this._chatMatcher = null;
           rejectChat(new Error(`chat ${p.state}: ${p.errorMessage || ''}`));
         }
       }
@@ -211,6 +227,7 @@ export class DeployClient {
       this._chatReject(err);
       this._chatResolve = null;
       this._chatReject = null;
+      this._chatMatcher = null;
     }
   }
 
@@ -233,14 +250,20 @@ export class DeployClient {
     });
   }
 
-  async chat(message, timeoutMs = this.config.chatTimeout) {
+  async chat(message, options = this.config.chatTimeout) {
+    const normalized = typeof options === 'number'
+      ? { timeoutMs: options, matchText: null }
+      : { timeoutMs: options?.timeoutMs ?? this.config.chatTimeout, matchText: options?.matchText ?? null };
+
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this._chatResolve = null;
         this._chatReject = null;
+        this._chatMatcher = null;
         reject(new Error('chat 超时'));
-      }, timeoutMs);
+      }, normalized.timeoutMs);
 
+      this._chatMatcher = normalized.matchText;
       this._chatResolve = (text) => { clearTimeout(timeout); resolve(text); };
       this._chatReject = (err) => { clearTimeout(timeout); reject(err); };
 
@@ -249,10 +272,11 @@ export class DeployClient {
         message,
         deliver: false,
         idempotencyKey: randomUUID(),
-      }, timeoutMs).catch(e => {
+      }, normalized.timeoutMs).catch(e => {
         clearTimeout(timeout);
         this._chatResolve = null;
         this._chatReject = null;
+        this._chatMatcher = null;
         reject(e);
       });
     });

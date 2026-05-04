@@ -4,6 +4,8 @@ import { withRetry, sleep } from './utils.mjs';
 import { probeHealth } from '../relay/proxy.mjs';
 
 const MISSING_SHARE_URL_RETRY_MS = 5 * 60 * 1000;
+const SHARE_URL_PROBE_RETRIES = 3;
+const SHARE_URL_PROBE_DELAY_MS = 4000;
 
 function parseDeployResult(reply) {
   const text = String(reply || '');
@@ -59,6 +61,22 @@ function isValidShareUrl(url) {
   } catch {
     return false;
   }
+}
+
+async function probeShareUrlWithRetry({ shareUrl, timeoutMs = 15_000, retries = SHARE_URL_PROBE_RETRIES, delayMs = SHARE_URL_PROBE_DELAY_MS, log }) {
+  let lastHealth = { ok: false, statusCode: 0, body: '', error: 'not probed' };
+  for (let i = 0; i < retries; i++) {
+    lastHealth = await probeHealth({ baseUrl: shareUrl, timeoutMs });
+    if (lastHealth.ok) {
+      if (i > 0) log?.('info', `分享地址复检成功（第 ${i + 1} 次）: ${shareUrl}`);
+      return lastHealth;
+    }
+    if (i < retries - 1) {
+      log?.('warn', `分享地址健康检查失败（第 ${i + 1}/${retries} 次，${lastHealth.error || `health ${lastHealth.statusCode}`})，${delayMs / 1000}s 后重试`);
+      await sleep(delayMs);
+    }
+  }
+  return lastHealth;
 }
 
 
@@ -127,7 +145,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
 
       log('deploy', '下发部署请求...');
-      const reply = await client.chat(deployPrompt, config.deployTimeout);
+      const reply = await client.chat(deployPrompt, { timeoutMs: config.deployTimeout, matchText: marker });
       const parsed = parseDeployResult(reply);
 
       if (reply?.includes(`${marker}_OK`)) {
@@ -216,7 +234,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
 
 
-      const reply = await client.chat(recoverPrompt, config.deployTimeout);
+      const reply = await client.chat(recoverPrompt, { timeoutMs: config.deployTimeout, matchText: marker });
       const parsed = parseDeployResult(reply);
 
       if (!reply?.includes(`${marker}_OK`)) {
@@ -240,24 +258,25 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         return { success: false, reply, shareUrl: null, localUrl, healthOk: true, started: parsed.started, tunnelMissing: true };
       }
 
-      const shareHealth = await probeHealth({ baseUrl: shareUrl, timeoutMs: 15_000 });
+      const shareHealth = await probeShareUrlWithRetry({ shareUrl, timeoutMs: 15_000, log });
       if (!shareHealth.ok) {
-        log('warn', `实例返回了分享地址，但对外健康检查失败 (${shareHealth.error || `health ${shareHealth.statusCode}`})`);
+        log('warn', `实例返回了分享地址，但对外健康检查仍失败 (${shareHealth.error || `health ${shareHealth.statusCode}`})；先保留地址，等待后续复检`);
         log('info', '回复:', reply?.slice(0, 500));
         return {
-          success: false,
+          success: true,
           reply,
-          shareUrl: null,
+          shareUrl,
           localUrl,
           healthOk: true,
           started: parsed.started,
-          tunnelMissing: true,
-          invalidShareUrl: shareUrl,
+          tunnelMissing: false,
+          shareUrlPending: true,
+          shareUrlHealthError: shareHealth.error || `health ${shareHealth.statusCode}`,
         };
       }
 
       log('ok', `实例原地恢复成功 | 分享地址: ${shareUrl}`);
-      return { success: true, reply, shareUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: false };
+      return { success: true, reply, shareUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: false, shareUrlPending: false };
     } catch (e) {
       log('warn', '实例原地探测失败:', e.message);
       return { success: false, reply: '', shareUrl: null, localUrl: null, healthOk: false, started: false, tunnelMissing: false };
