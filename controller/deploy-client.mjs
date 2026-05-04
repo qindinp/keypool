@@ -56,6 +56,43 @@ function extractTextContent(content) {
   return '';
 }
 
+function collectTextCandidates(value, seen = new Set()) {
+  const push = (text) => {
+    const normalized = String(text || '').trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+  };
+
+  const visit = (node) => {
+    if (!node) return;
+    if (typeof node === 'string') {
+      push(node);
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    const direct = extractTextContent(node.content);
+    if (direct) push(direct);
+    if (typeof node.text === 'string') push(node.text);
+    if (typeof node.message === 'string') push(node.message);
+    if (typeof node.delta === 'string') push(node.delta);
+
+    if (node.message && typeof node.message === 'object') visit(node.message);
+    if (node.delta && typeof node.delta === 'object') visit(node.delta);
+    if (node.content && typeof node.content === 'object') visit(node.content);
+    if (node.parts && Array.isArray(node.parts)) visit(node.parts);
+    if (node.blocks && Array.isArray(node.blocks)) visit(node.blocks);
+    if (node.items && Array.isArray(node.items)) visit(node.items);
+  };
+
+  visit(value);
+  return [...seen];
+}
+
 export class DeployClient {
   constructor({ cookie, getTicket, config, log }) {
     this.cookie = cookie;
@@ -69,6 +106,8 @@ export class DeployClient {
     this._chatResolve = null;
     this._chatReject = null;
     this._chatMatcher = null;
+    this._chatEventTexts = [];
+    this._chatMatchedText = null;
   }
 
   async connect() {
@@ -121,12 +160,32 @@ export class DeployClient {
         const p = msg.payload;
         if (!p) return;
 
+        if (this._chatResolve) {
+          const eventTexts = collectTextCandidates(p);
+          for (const text of eventTexts) {
+            if (!this._chatEventTexts.includes(text)) this._chatEventTexts.push(text);
+            if (this._chatMatcher && text.includes(this._chatMatcher)) {
+              this._chatMatchedText = text;
+            }
+          }
+        }
+
         if (p.state === 'final' && this._chatResolve) {
           const resolveChat = this._chatResolve;
           const matcher = this._chatMatcher;
+          const matchedFromEvents = this._chatMatchedText;
+          const eventTextFallback = this._chatEventTexts.filter(Boolean).join('\n').trim();
           this._chatResolve = null;
           this._chatReject = null;
           this._chatMatcher = null;
+          this._chatEventTexts = [];
+          this._chatMatchedText = null;
+
+          if (matchedFromEvents) {
+            resolveChat(matchedFromEvents);
+            return;
+          }
+
           const sk = p.sessionKey || 'main';
           this.request('chat.history', { sessionKey: sk, limit: 20 }, 15000)
             .then(hist => {
@@ -142,9 +201,9 @@ export class DeployClient {
                 : [];
               const fallbackAssistant = assistantTexts.map(item => item.text);
               const fallbackAny = texts.map(item => item.text);
-              resolveChat(matching.at(-1) || fallbackAssistant.at(-1) || fallbackAny.at(-1) || '');
+              resolveChat(matching.at(-1) || eventTextFallback || fallbackAssistant.at(-1) || fallbackAny.at(-1) || '');
             })
-            .catch(() => resolveChat(''));
+            .catch(() => resolveChat(eventTextFallback || ''));
           return;
         }
 
@@ -228,6 +287,8 @@ export class DeployClient {
       this._chatResolve = null;
       this._chatReject = null;
       this._chatMatcher = null;
+      this._chatEventTexts = [];
+      this._chatMatchedText = null;
     }
   }
 
@@ -260,10 +321,14 @@ export class DeployClient {
         this._chatResolve = null;
         this._chatReject = null;
         this._chatMatcher = null;
+        this._chatEventTexts = [];
+        this._chatMatchedText = null;
         reject(new Error('chat 超时'));
       }, normalized.timeoutMs);
 
       this._chatMatcher = normalized.matchText;
+      this._chatEventTexts = [];
+      this._chatMatchedText = null;
       this._chatResolve = (text) => { clearTimeout(timeout); resolve(text); };
       this._chatReject = (err) => { clearTimeout(timeout); reject(err); };
 
@@ -277,6 +342,8 @@ export class DeployClient {
         this._chatResolve = null;
         this._chatReject = null;
         this._chatMatcher = null;
+        this._chatEventTexts = [];
+        this._chatMatchedText = null;
         reject(e);
       });
     });
