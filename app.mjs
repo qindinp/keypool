@@ -13,6 +13,7 @@ function startChild(name, args, extraEnv = {}) {
     cwd: process.cwd(),
     env: { ...process.env, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 
   child.stdout.on('data', (chunk) => {
