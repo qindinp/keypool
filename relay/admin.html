@@ -82,7 +82,14 @@
     .log-file { color: #8fc6ff; margin-right: 8px; }
     .tip { color: var(--muted); font-size: 13px; margin-top: 8px; }
     .empty { color: var(--muted); padding: 18px; border:1px dashed var(--line); border-radius:14px; }
-    .accounts-layout { display:grid; grid-template-columns: 2fr 1fr; gap:14px; }
+    .accounts-layout { display:grid; grid-template-columns: 1.1fr 2fr 1fr; gap:14px; }
+    .account-sidebar { display:flex; flex-direction:column; gap:10px; }
+    .account-list { display:flex; flex-direction:column; gap:10px; }
+    .account-list-item { border:1px solid var(--line); border-radius:14px; padding:12px; background: rgba(255,255,255,.03); cursor:pointer; }
+    .account-list-item.active { border-color: var(--blue); background: rgba(91,157,255,.12); }
+    .account-list-item .title { font-weight: 700; }
+    .account-list-item .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .account-editor-panel { min-height: 240px; }
     .account-editor-list { display:grid; gap:12px; }
     .form-grid { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:10px; }
     .field { display:flex; flex-direction:column; gap:6px; }
@@ -165,7 +172,18 @@
     <div class="accounts-layout">
       <div class="card">
         <div id="accountsBanner"></div>
-        <div id="accountEditorList" class="account-editor-list"></div>
+        <div class="accounts-layout">
+          <div class="account-sidebar">
+            <div class="section-title">
+              <h3>账号列表</h3>
+              <div class="muted" id="accountListMeta">-</div>
+            </div>
+            <div id="accountList" class="account-list"></div>
+          </div>
+          <div class="account-editor-panel">
+            <div id="accountEditorList" class="account-editor-list"></div>
+          </div>
+        </div>
       </div>
       <div class="card">
         <h3>使用说明</h3>
@@ -234,6 +252,7 @@
       dirty: false,
       busyActions: new Set(),
       actionStatus: {},
+      selectedAccountIndex: 0,
     };
 
     function fmtTime(value) {
@@ -368,13 +387,47 @@
         hasCookieFile: false,
       };
     }
-    function renderAccountEditor() {
-      const list = $('accountEditorList');
+    function ensureSelectedAccount() {
+      if (!state.accounts.length) {
+        state.selectedAccountIndex = 0;
+        return;
+      }
+      if (!Number.isInteger(state.selectedAccountIndex) || state.selectedAccountIndex < 0) {
+        state.selectedAccountIndex = 0;
+      }
+      if (state.selectedAccountIndex >= state.accounts.length) {
+        state.selectedAccountIndex = state.accounts.length - 1;
+      }
+    }
+    function renderAccountList() {
+      const list = $('accountList');
+      $('accountListMeta').textContent = `${state.accounts.length} 个账号`;
       if (!state.accounts.length) {
         list.innerHTML = '<div class="empty">还没有账号。点击“新增账号”创建第一个账号。</div>';
         return;
       }
+      ensureSelectedAccount();
       list.innerHTML = state.accounts.map((acc, index) => `
+        <div class="account-list-item ${index === state.selectedAccountIndex ? 'active' : ''}" data-account-select="${index}">
+          <div class="title">${escapeHtml(acc.name || acc.id || `账号 ${index + 1}`)}</div>
+          <div class="meta mono">${escapeHtml(acc.id || '-')}</div>
+          <div class="meta">优先级 ${escapeHtml(acc.priority ?? 100)} · ${acc.enabled !== false ? '已启用' : '已停用'}</div>
+        </div>
+      `).join('');
+    }
+    function renderAccountEditor() {
+      const list = $('accountEditorList');
+      if (!state.accounts.length) {
+        $('accountListMeta').textContent = '0 个账号';
+        if ($('accountList')) $('accountList').innerHTML = '<div class="empty">还没有账号。点击“新增账号”创建第一个账号。</div>';
+        list.innerHTML = '<div class="empty">请先新增账号。</div>';
+        return;
+      }
+      ensureSelectedAccount();
+      renderAccountList();
+      const index = state.selectedAccountIndex;
+      const acc = state.accounts[index];
+      list.innerHTML = `
         <div class="account-editor-card" data-account-index="${index}">
           <div class="row">
             <div>
@@ -418,34 +471,45 @@
             </div>
           </div>
         </div>
-      `).join('');
+      `;
+    }
+    function syncSelectedAccountFromDom() {
+      if (!state.accounts.length) return;
+      ensureSelectedAccount();
+      const index = state.selectedAccountIndex;
+      const get = (field) => document.querySelector(`[data-field="${field}"][data-index="${index}"]`);
+      if (!get('id')) return;
+      state.accounts[index] = {
+        ...state.accounts[index],
+        id: get('id')?.value?.trim() || '',
+        name: get('name')?.value?.trim() || '',
+        priority: Number(get('priority')?.value || 100),
+        tags: (get('tags')?.value || '').split(',').map(s => s.trim()).filter(Boolean),
+        cookie: get('cookie')?.value?.trim() || '',
+        cookieFile: get('cookieFile')?.value?.trim() || '',
+        enabled: Boolean(get('enabled')?.checked),
+      };
     }
     function collectAccountsFromDom() {
-      return state.accounts.map((acc, index) => {
-        const get = (field) => document.querySelector(`[data-field="${field}"][data-index="${index}"]`);
-        return {
-          ...acc,
-          id: get('id')?.value?.trim() || '',
-          name: get('name')?.value?.trim() || '',
-          priority: Number(get('priority')?.value || 100),
-          tags: (get('tags')?.value || '').split(',').map(s => s.trim()).filter(Boolean),
-          cookie: get('cookie')?.value?.trim() || '',
-          cookieFile: get('cookieFile')?.value?.trim() || '',
-          enabled: Boolean(get('enabled')?.checked),
-        };
-      });
+      syncSelectedAccountFromDom();
+      return state.accounts.map(acc => ({ ...acc }));
     }
     function bindAccountEditorEvents() {
-      $('accountEditorList').addEventListener('input', () => { state.dirty = true; showAccountsBanner('账号配置有未保存修改。', 'ok'); });
+      $('accountEditorList').addEventListener('input', () => {
+        state.dirty = true;
+        syncSelectedAccountFromDom();
+        renderAccountList();
+        showAccountsBanner('账号配置有未保存修改。', 'ok');
+      });
       $('accountEditorList').addEventListener('click', (event) => {
         const target = event.target;
         const action = target?.dataset?.action;
         const index = Number(target?.dataset?.index);
         if (!action || !Number.isFinite(index)) return;
-        const current = collectAccountsFromDom();
-        state.accounts = current;
+        syncSelectedAccountFromDom();
         if (action === 'remove') {
           state.accounts.splice(index, 1);
+          state.selectedAccountIndex = Math.max(0, index - 1);
           state.dirty = true;
           renderAccountEditor();
           showAccountsBanner('已删除一条账号草稿，记得保存。', 'ok');
@@ -457,10 +521,18 @@
           source.name = `${source.name || source.id || '账号'} 副本`;
           source.cookie = '';
           state.accounts.splice(index + 1, 0, source);
+          state.selectedAccountIndex = index + 1;
           state.dirty = true;
           renderAccountEditor();
           showAccountsBanner('已复制账号草稿，新的副本需要你确认 ID。', 'ok');
         }
+      });
+      $('accountList').addEventListener('click', (event) => {
+        const target = event.target.closest('[data-account-select]');
+        if (!target) return;
+        syncSelectedAccountFromDom();
+        state.selectedAccountIndex = Number(target.dataset.accountSelect || 0);
+        renderAccountEditor();
       });
     }
     async function fetchJson(url) {
@@ -502,6 +574,7 @@
         return;
       }
       state.accounts = Array.isArray(result.body.accounts) ? result.body.accounts : [];
+      ensureSelectedAccount();
       state.accountsPath = result.body.path || '';
       $('accountsPath').textContent = state.accountsPath || 'accounts.json';
       state.dirty = false;
@@ -517,6 +590,7 @@
         return;
       }
       state.accounts = Array.isArray(result.body.accounts) ? result.body.accounts : accounts;
+      ensureSelectedAccount();
       state.accountsPath = result.body.path || state.accountsPath;
       $('accountsPath').textContent = state.accountsPath || 'accounts.json';
       state.dirty = false;
@@ -617,6 +691,7 @@
 
       if (!state.dirty) {
         state.accounts = Array.isArray(data.accounts?.accounts) ? data.accounts.accounts : state.accounts;
+        ensureSelectedAccount();
         state.accountsPath = data.accounts?.path || state.accountsPath;
         $('accountsPath').textContent = state.accountsPath || 'accounts.json';
         renderAccountEditor();
@@ -638,6 +713,7 @@
       const current = collectAccountsFromDom();
       state.accounts = current;
       state.accounts.push(accountTemplate(state.accounts.length));
+      state.selectedAccountIndex = state.accounts.length - 1;
       state.dirty = true;
       renderAccountEditor();
       showAccountsBanner('已新增一个账号草稿，记得保存。', 'ok');
