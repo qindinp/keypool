@@ -323,7 +323,55 @@ async function runAccountAction(accountId, action) {
   if (action === 'deploy') {
     await runtime.worker.renewFlow('admin-manual-deploy');
   } else if (action === 'recover') {
-    await runtime.worker.recoverAvailableInstance();
+    const recovered = await runtime.worker.recoverAvailableInstance();
+    if (!recovered?.success) {
+      throw new Error('原地恢复未拿到可确认的可用分享地址');
+    }
+
+    const state = runtime.stateStore.loadState();
+    state.currentShareUrl = recovered.shareUrl || state.currentShareUrl || null;
+    state.currentLocalUrl = recovered.localUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
+    state.lastHealthError = null;
+    state.history = state.history || [];
+    state.history.push({
+      at: new Date().toISOString(),
+      reason: 'admin-manual-recover',
+      expireTime: state.lastExpireTime || null,
+      key: null,
+      shareUrl: state.currentShareUrl,
+      localUrl: state.currentLocalUrl,
+      success: true,
+    });
+    if (state.history.length > 50) state.history = state.history.slice(-50);
+    runtime.stateStore.saveState(state, runtime.log);
+
+    let instanceStatus = 'UNKNOWN';
+    let expireTime = state.lastExpireTime || null;
+    try {
+      const status = await runtime.api.getStatus(account.cookie);
+      instanceStatus = status.status || 'UNKNOWN';
+      expireTime = status.expireTime || expireTime;
+    } catch {}
+
+    registry.upsert({
+      accountId: account.id,
+      accountName: account.name,
+      userId: auth.userId || null,
+      userName: auth.userName || null,
+      baseUrl: state.currentShareUrl || null,
+      shareUrl: state.currentShareUrl || null,
+      localUrl: state.currentLocalUrl || 'http://127.0.0.1:9200',
+      healthy: Boolean(state.currentShareUrl),
+      priority: account.priority,
+      tags: account.tags || [],
+      instanceStatus,
+      expireTime,
+      deployed: true,
+      deployCount: state.deployCount || 0,
+      lastDeployAt: state.lastDeployAt || null,
+      lastError: null,
+      lastStatusCode: state.currentShareUrl ? 200 : 0,
+    });
   } else if (action === 'destroy') {
     await runtime.api.destroyInstance(account.cookie);
   } else {

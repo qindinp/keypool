@@ -224,7 +224,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
       const shareUrl = parsed.shareUrl || null;
       const localUrl = parsed.localUrl || 'http://127.0.0.1:9200';
-      const localRecovered = parsed.healthOk || parsed.started || reply?.includes('LOCAL_OK') || reply?.includes('SERVICE_RUNNING') || reply?.includes('SERVICE_RESTARTED');
+      const localRecovered = parsed.healthOk || parsed.started || !!shareUrl || reply?.includes('LOCAL_OK') || reply?.includes('SERVICE_RUNNING') || reply?.includes('SERVICE_RESTARTED');
       if (!localRecovered) {
         log('warn', '实例原地探测未能确认本地服务健康恢复');
         log('info', '回复:', reply?.slice(0, 500));
