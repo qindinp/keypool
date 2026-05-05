@@ -14,6 +14,21 @@ import { request as httpsRequest } from 'node:https';
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB
 const PROXY_TIMEOUT_MS = 120_000;         // 2 分钟
 
+/** 从 SSE chunk 中解析 usage 信息 */
+function parseStreamChunk(text, onData) {
+  let buf = text;
+  while (buf.length > 0) {
+    const newlineIdx = buf.indexOf('\n');
+    const line = newlineIdx === -1 ? buf : buf.slice(0, newlineIdx);
+    buf = newlineIdx === -1 ? '' : buf.slice(newlineIdx + 1);
+    if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+      try {
+        onData(JSON.parse(line.slice(6)));
+      } catch {}
+    }
+  }
+}
+
 /**
  * 安全地读取请求体，带大小限制
  * @returns {Promise<string>}
@@ -71,6 +86,18 @@ export function proxyRequest(opts) {
   delete headers['host'];
   headers['authorization'] = `Bearer ${keyEntry.key}`;
 
+  // 流式请求注入 stream_options 以获取 usage 统计
+  let proxyBody = body;
+  if (body && targetPath.includes('/chat/completions')) {
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed.stream && !parsed.stream_options) {
+        parsed.stream_options = { include_usage: true };
+        proxyBody = JSON.stringify(parsed);
+      }
+    } catch {}
+  }
+
   const requester = target.isHttps ? httpsRequest : httpRequest;
 
   const proxyReq = requester({
@@ -90,8 +117,8 @@ export function proxyRequest(opts) {
 
         // 有限重试：429/401/403 自动切换到下一个 key
         if ([401, 403, 429].includes(statusCode) && retryCount < maxRetries) {
-          const retryKey = pool.pick();
-          if (retryKey && retryKey.id !== keyEntry.id) {
+          const retryKey = pool.pickOther(keyEntry.id);
+          if (retryKey) {
             log('info', `Retrying with key ${retryKey.id} after ${statusCode} (attempt ${retryCount + 1}/${maxRetries})`);
             return proxyRequest({ ...opts, keyEntry: retryKey, retryCount: retryCount + 1 });
           }
@@ -101,7 +128,13 @@ export function proxyRequest(opts) {
           log('warn', `All retry attempts exhausted (${retryCount}/${maxRetries})`);
         }
 
-        res.writeHead(statusCode, proxyRes.headers);
+        // 只透传安全的 headers，过滤上游内部信息
+        const safeHeaders = {};
+        const allowHeaders = ['content-type', 'retry-after', 'x-request-id', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset'];
+        for (const h of allowHeaders) {
+          if (proxyRes.headers[h]) safeHeaders[h] = proxyRes.headers[h];
+        }
+        res.writeHead(statusCode, safeHeaders);
         res.end(errBody);
       });
       return;
@@ -110,28 +143,80 @@ export function proxyRequest(opts) {
     // 成功 — 流式/非流式透传
     const isStream = proxyRes.headers['content-type']?.includes('text/event-stream');
 
-    res.writeHead(statusCode, proxyRes.headers);
-
     if (isStream) {
-      let buffer = '';
+      // 流式：先缓冲第一个 chunk，确认上游真的返回了 200 再发送 header
+      let headersSent = false;
       let usage = null;
+      let lineBuf = Buffer.alloc(0); // 用 Buffer 处理 UTF-8 边界
 
       proxyRes.on('data', (chunk) => {
-        res.write(chunk);
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.usage) usage = data.usage;
-            } catch {}
+        if (!headersSent) {
+          // 检查第一个 chunk 中是否包含错误 SSE 事件
+          const text = lineBuf.toString() + chunk.toString();
+          lineBuf = Buffer.alloc(0);
+          const firstNewline = text.indexOf('\n');
+          if (firstNewline === -1) {
+            lineBuf = Buffer.from(text);
+            return;
           }
+          // 检查是否是 error event
+          const firstLine = text.slice(0, firstNewline).trim();
+          if (firstLine.startsWith('event: error')) {
+            let errBody = text;
+            proxyRes.on('data', (c) => { errBody += c.toString(); });
+            proxyRes.on('end', () => {
+              pool.markError(keyEntry, statusCode, errBody);
+              if ([401, 403, 429].includes(statusCode) && retryCount < maxRetries) {
+                const retryKey = pool.pickOther(keyEntry.id);
+                if (retryKey) {
+                  log('info', `Stream retry with key ${retryKey.id} after error event (attempt ${retryCount + 1}/${maxRetries})`);
+                  return proxyRequest({ ...opts, keyEntry: retryKey, retryCount: retryCount + 1 });
+                }
+              }
+              if (!res.headersSent) {
+                res.writeHead(statusCode, proxyRes.headers);
+              }
+              res.end(errBody);
+            });
+            return;
+          }
+
+          // 正常流式数据，发送 header
+          headersSent = true;
+          res.writeHead(statusCode, proxyRes.headers);
+          // 处理已缓冲的数据
+          res.write(chunk);
+          // 用 Buffer 拼接处理 UTF-8 边界
+          lineBuf = Buffer.from(text);
+          processStreamData(lineBuf, false);
+          lineBuf = Buffer.alloc(0);
+        } else {
+          res.write(chunk);
+          processStreamData(chunk, true);
         }
       });
 
+      /** 处理流式数据，用 Buffer 拼接避免 UTF-8 边界截断 */
+      function processStreamData(chunk, emit) {
+        lineBuf = Buffer.concat([lineBuf, chunk]);
+        // 按行分割，最后一行可能不完整，保留在 buffer 中
+        const nlIdx = lineBuf.lastIndexOf(0x0A); // '\n'
+        if (nlIdx === -1) return;
+        const complete = lineBuf.slice(0, nlIdx + 1);
+        lineBuf = lineBuf.slice(nlIdx + 1);
+        const text = complete.toString('utf-8');
+        parseStreamChunk(text, (data) => { if (data.usage) usage = data.usage; });
+      }
+
       proxyRes.on('end', () => {
+        if (!headersSent) {
+          headersSent = true;
+          res.writeHead(statusCode, proxyRes.headers);
+        }
+        // 处理 buffer 中剩余数据
+        if (lineBuf.length > 0) {
+          parseStreamChunk(lineBuf.toString('utf-8'), (data) => { if (data.usage) usage = data.usage; });
+        }
         res.end();
         const tokens = usage?.total_tokens || 0;
         pool.markSuccess(keyEntry, tokens);
@@ -167,9 +252,9 @@ export function proxyRequest(opts) {
     res.end(JSON.stringify({ error: { message: 'Proxy error', type: 'proxy_error' } }));
   });
 
-  // 透传请求体
-  if (body) {
-    proxyReq.write(body);
+  // 透传请求体（使用可能注入了 stream_options 的版本）
+  if (proxyBody) {
+    proxyReq.write(proxyBody);
   }
   proxyReq.end();
 }

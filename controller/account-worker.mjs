@@ -20,12 +20,14 @@ function parseDeployResult(reply) {
   const localUrlMatch = normalized.match(/http:\/\/127\.0\.0\.1:9200(?:\/health)?/);
   const healthOk = /健康检查通过|LOCAL_OK/.test(normalized);
   const started = /服务已成功启动|SERVICE_RUNNING|SERVICE_RESTARTED/.test(normalized);
+  const shareUrlMissing = /SHARE_URL_MISSING|未获取到.*分享地址|tunnel.*未产出/i.test(normalized);
 
   return {
     shareUrl,
     localUrl: localUrlMatch ? localUrlMatch[0] : null,
     healthOk,
     started,
+    shareUrlMissing,
   };
 }
 
@@ -85,10 +87,16 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     const start = Date.now();
     log('clock', '等待实例就绪...');
 
+    const TERMINAL_STATES = new Set(['FAILED', 'ERROR', 'DESTROYED']);
+
     while (Date.now() - start < config.readyTimeout) {
       try {
         const status = await api.getStatus(cookie);
         if (status.status === 'AVAILABLE') break;
+        if (TERMINAL_STATES.has(status.status)) {
+          log('error', `实例进入终态 ${status.status}，无法恢复`);
+          return false;
+        }
         log('info', `实例状态: ${status.status}，继续等待...`);
       } catch {}
       await sleep(5000);
@@ -139,32 +147,48 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '如果服务会异步建立 SSH 隧道，请额外等待最多 35 秒，检查 keypool/.tunnel-url 是否出现。',
         '如果 keypool/.tunnel-url 存在，请读取其中地址并按 `SHARE_URL=<地址>` 单独输出一行。',
         '如果没有拿到对外地址，也请明确输出 `SHARE_URL_MISSING`。',
-        `如果健康检查通过，请只回复 ${marker}_OK。`,
-        `如果失败，请只回复 ${marker}_FAIL，并附上一句最短原因。`,
+        '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
+        `  ${marker}_OK`,
+        `  ${marker}_FAIL`,
+        '根据结果二选一，不要两个都输出。前面可以有其他内容，但最后两行必须是 SHARE_URL 行和结果标记行。',
       ].join('\n');
-
 
       log('deploy', '下发部署请求...');
       const reply = await client.chat(deployPrompt, { timeoutMs: config.deployTimeout, matchText: marker });
       const parsed = parseDeployResult(reply);
 
-      if (reply?.includes(`${marker}_OK`)) {
+      // 多层匹配：精确匹配 → 模糊匹配 → 强信号判定
+      const hasOk = reply?.includes(`${marker}_OK`) || false;
+      const hasFail = reply?.includes(`${marker}_FAIL`) || false;
+
+      if (hasOk && !hasFail) {
         log('ok', 'KeyPool 部署成功，健康检查通过');
         if (parsed.shareUrl) log('info', `分享地址: ${parsed.shareUrl}`);
         return { success: true, reply, ...parsed };
       }
-      if (reply?.includes(`${marker}_FAIL`)) {
+      if (hasFail) {
         log('error', 'KeyPool 部署失败');
         log('info', '回复:', reply?.slice(0, 500));
         return { success: false, reply, ...parsed };
       }
 
+      // Marker 未出现，用强信号兜底
       const strongSuccess = reply && (parsed.started || parsed.healthOk || !!parsed.localUrl);
       if (strongSuccess) {
         log('ok', 'KeyPool 部署成功（根据明确健康状态文本判定）');
         log('info', '回复:', reply?.slice(0, 500));
         if (parsed.shareUrl) log('info', `分享地址: ${parsed.shareUrl}`);
         return { success: true, reply, ...parsed };
+      }
+
+      // 最后兜底：如果回复中有明确的失败信号
+      const hasFailureSignal = reply && (
+        /部署失败|deploy.*fail|健康检查.*失败|health.*fail|无法启动|failed to start/i.test(reply)
+      );
+      if (hasFailureSignal) {
+        log('error', 'KeyPool 部署失败（根据失败文本判定）');
+        log('info', '回复:', reply?.slice(0, 500));
+        return { success: false, reply, ...parsed };
       }
 
       log('error', '部署结果异常：未返回明确标记');
@@ -228,17 +252,29 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '3. 输出 `TUNNEL_FILE=present` 或 `TUNNEL_FILE=missing`。',
         '4. 输出 `SSH_TUNNEL=running` 或 `SSH_TUNNEL=missing`，用于表示 ssh -R 隧道进程是否存在。',
         '5. 如可行，附带 /tmp/keypool.log 最后 20 行中的 tunnel/ssh 相关关键信息。',
-        `如果最终本地健康检查通过，请只回复 ${marker}_OK，并附带最短状态摘要。`,
-        `如果最终仍失败，请只回复 ${marker}_FAIL，并附带一句最短原因。`,
+        '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
+        `  ${marker}_OK`,
+        `  ${marker}_FAIL`,
+        '根据结果二选一。前面可以有其他内容，但最后两行必须是 SHARE_URL 行和结果标记行。',
       ].join('\n');
-
-
 
       const reply = await client.chat(recoverPrompt, { timeoutMs: config.deployTimeout, matchText: marker });
       const parsed = parseDeployResult(reply);
 
-      if (!reply?.includes(`${marker}_OK`)) {
-        log('warn', '实例原地探测/恢复失败');
+      // 多层匹配：精确匹配 → 强信号判定
+      const hasOk = reply?.includes(`${marker}_OK`) || false;
+      const hasFail = reply?.includes(`${marker}_FAIL`) || false;
+      const hasStrongOkSignal = reply && (
+        reply.includes('LOCAL_OK') || reply.includes('SERVICE_RUNNING') || reply.includes('SERVICE_RESTARTED')
+      );
+
+      if (!hasOk && !hasStrongOkSignal) {
+        // marker 没出现，也没有强成功信号
+        if (hasFail) {
+          log('warn', '实例原地探测/恢复失败（FAIL 标记）');
+        } else {
+          log('warn', '实例原地探测/恢复失败（无明确标记）');
+        }
         log('info', '回复:', reply?.slice(0, 500));
         return { success: false, reply, ...parsed };
       }
@@ -288,6 +324,12 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
   async function renewFlow(reason) {
     log('rocket', `开始续期流程 (${reason})`);
 
+    // 保存旧状态，用于部署失败时回滚
+    const oldState = stateStore.loadState();
+    const oldShareUrl = oldState.currentShareUrl || null;
+    const oldLocalUrl = oldState.currentLocalUrl || null;
+    const oldKey = oldState.currentKey || null;
+
     let newStatus;
     try {
       newStatus = await withRetry('创建实例', () => api.createInstance(cookie), {
@@ -315,12 +357,29 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     const ready = await waitForReady();
     if (!ready) {
       log('error', '实例未就绪，续期流程中止');
+      // 尝试恢复旧状态标记，避免丢失旧地址
+      if (oldShareUrl) {
+        log('info', `保留旧分享地址: ${oldShareUrl}`);
+        const state = stateStore.loadState();
+        state.currentShareUrl = oldShareUrl;
+        state.currentLocalUrl = oldLocalUrl;
+        if (oldKey) state.currentKey = oldKey;
+        state.lastHealthError = 'renew-failed-kept-old';
+        stateStore.saveState(state, log);
+      }
       return false;
     }
 
     const deployResult = await deployKeyPool();
     if (!deployResult.success) {
       log('error', 'KeyPool 部署失败');
+      // 部署失败但新实例已创建，旧实例可能已被销毁
+      // 记录失败状态，但不回滚（旧实例可能已不存在）
+      const state = stateStore.loadState();
+      state.lastHealthError = 'deploy-failed-after-renew';
+      state.lastDeployAt = Date.now();
+      stateStore.saveState(state, log);
+      log('warn', '部署失败，旧实例可能已被销毁，需要手动干预或等待下次循环重试');
       return false;
     }
 

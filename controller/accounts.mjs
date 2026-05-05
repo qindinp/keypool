@@ -39,9 +39,13 @@ function normalizeAccount(raw, index) {
 
 export function loadAccounts(accountsPath = defaultAccountsPath) {
   if (existsSync(accountsPath)) {
-    const data = readJson(accountsPath);
-    const list = Array.isArray(data) ? data : Array.isArray(data.accounts) ? data.accounts : [];
-    return list.map(normalizeAccount).filter(a => a.enabled);
+    try {
+      const data = readJson(accountsPath);
+      const list = Array.isArray(data) ? data : Array.isArray(data.accounts) ? data.accounts : [];
+      return list.map(normalizeAccount).filter(a => a.enabled);
+    } catch (e) {
+      console.error(`⚠️  accounts.json 解析失败: ${e.message}，使用默认单账号模式`);
+    }
   }
 
   return [{

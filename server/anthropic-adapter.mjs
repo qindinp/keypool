@@ -68,10 +68,30 @@ export function anthropicToOpenAI(body) {
           if (typeof block.content === 'string') {
             resultContent = block.content;
           } else if (Array.isArray(block.content)) {
-            resultContent = block.content
-              .filter((b) => b.type === 'text')
-              .map((b) => b.text)
-              .join('\n');
+            // 包含 text 和 image 类型的 block
+            const parts = [];
+            for (const b of block.content) {
+              if (b.type === 'text') {
+                parts.push({ type: 'text', text: b.text });
+              } else if (b.type === 'image') {
+                parts.push({
+                  type: 'image_url',
+                  image_url: {
+                    url: b.source?.type === 'base64'
+                      ? `data:${b.source.media_type};base64,${b.source.data}`
+                      : b.source?.url || '',
+                  },
+                });
+              }
+            }
+            // 如果只有纯文本，简化为字符串
+            if (parts.length === 1 && parts[0].type === 'text') {
+              resultContent = parts[0].text;
+            } else if (parts.length === 0) {
+              resultContent = '';
+            } else {
+              resultContent = parts;
+            }
           } else {
             resultContent = JSON.stringify(block.content || '');
           }
@@ -244,26 +264,32 @@ export function openAIChunkToAnthropicEvents(chunk, state) {
   // tool_calls → tool_use delta
   if (Array.isArray(choice.delta?.tool_calls)) {
     for (const tc of choice.delta.tool_calls) {
-      // 关闭之前的 thinking/text block
-      if (state.thinkingStarted && !state.thinkingClosed) {
-        state.thinkingClosed = true;
-        events.push({ type: 'content_block_stop', index: state.blockIndex });
-        state.blockIndex++;
-      }
-      if (state.textStarted && !state.textClosed) {
-        state.textClosed = true;
-        events.push({ type: 'content_block_stop', index: state.blockIndex });
-        state.blockIndex++;
-      }
-
+      // 关闭之前的 thinking/text block（只在第一个 tool_call 到来时关闭）
       const tcIndex = tc.index ?? 0;
       const stateKey = `tool_${tcIndex}`;
 
       if (!state[stateKey]) {
+        // 新的 tool_use block，关闭前面未关闭的 block
+        if (state.thinkingStarted && !state.thinkingClosed) {
+          state.thinkingClosed = true;
+          events.push({ type: 'content_block_stop', index: state.blockIndex });
+          state.blockIndex++;
+        }
+        if (state.textStarted && !state.textClosed) {
+          state.textClosed = true;
+          events.push({ type: 'content_block_stop', index: state.blockIndex });
+          state.blockIndex++;
+        }
+
+        // 记录 tool_use blocks 的起始 index
+        if (state.toolBlockStart === undefined) {
+          state.toolBlockStart = state.blockIndex;
+        }
+
         state[stateKey] = { started: true, name: tc.function?.name || '' };
         events.push({
           type: 'content_block_start',
-          index: state.blockIndex + tcIndex,
+          index: state.toolBlockStart + tcIndex,
           content_block: {
             type: 'tool_use',
             id: tc.id,
@@ -276,7 +302,7 @@ export function openAIChunkToAnthropicEvents(chunk, state) {
       if (tc.function?.arguments) {
         events.push({
           type: 'content_block_delta',
-          index: state.blockIndex + tcIndex,
+          index: state.toolBlockStart + tcIndex,
           delta: {
             type: 'input_json_delta',
             partial_json: tc.function.arguments,
@@ -320,11 +346,12 @@ export function openAIChunkToAnthropicEvents(chunk, state) {
       events.push({ type: 'content_block_stop', index: state.blockIndex });
     }
     // 关闭 tool_use blocks
+    const toolStart = state.toolBlockStart ?? state.blockIndex;
     for (const key of Object.keys(state)) {
       if (key.startsWith('tool_') && state[key]?.started && !state[key]?.closed) {
         state[key].closed = true;
         const idx = parseInt(key.slice(5));
-        events.push({ type: 'content_block_stop', index: state.blockIndex + idx });
+        events.push({ type: 'content_block_stop', index: toolStart + idx });
       }
     }
 
@@ -371,8 +398,8 @@ export function proxyAnthropicSync(keyEntry, openaiReq, model, res, pool, log, m
         pool.markError(keyEntry, proxyRes.statusCode, respBody);
 
         if ([401, 403, 429].includes(proxyRes.statusCode) && retryCount < maxRetries) {
-          const retryKey = pool.pick();
-          if (retryKey && retryKey.id !== keyEntry.id) {
+          const retryKey = pool.pickOther(keyEntry.id);
+          if (retryKey) {
             log('info', `Anthropic retry with key ${retryKey.id} (attempt ${retryCount + 1}/${maxRetries})`);
             return proxyAnthropicSync(retryKey, openaiReq, model, res, pool, log, maxRetries, retryCount + 1);
           }
@@ -425,11 +452,13 @@ export function proxyAnthropicStream(keyEntry, openaiReq, model, res, pool, log,
   const body = JSON.stringify({ ...openaiReq, stream: true });
   const requester = target.isHttps ? httpsRequest : httpRequest;
 
-  res.writeHead(200, {
+  // 不立即发送 200 header，等确认上游成功后再发，以便支持重试
+  let headersSent = false;
+  const streamHeaders = {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     'connection': 'keep-alive',
-  });
+  };
 
   const state = {
     started: false, blockIndex: 0,
@@ -437,6 +466,34 @@ export function proxyAnthropicStream(keyEntry, openaiReq, model, res, pool, log,
     textStarted: false, textClosed: false,
     model,
   };
+
+  /** 发送 header（仅一次） */
+  function ensureHeaders() {
+    if (!headersSent) {
+      headersSent = true;
+      res.writeHead(200, streamHeaders);
+    }
+  }
+
+  /** 处理上游错误，支持重试 */
+  function handleUpstreamError(statusCode, errBody) {
+    pool.markError(keyEntry, statusCode, errBody);
+
+    if ([401, 403, 429].includes(statusCode) && retryCount < maxRetries) {
+      const retryKey = pool.pickOther(keyEntry.id);
+      if (retryKey) {
+        log('info', `Anthropic stream retry with key ${retryKey.id} (attempt ${retryCount + 1}/${maxRetries})`);
+        return proxyAnthropicStream(retryKey, openaiReq, model, res, pool, log, maxRetries, retryCount + 1);
+      }
+    }
+
+    // 无法重试，发送错误响应
+    ensureHeaders();
+    const event = { type: 'error', error: { type: 'api_error', message: errBody } };
+    res.write(`event: error\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+    return null;
+  }
 
   const proxyReq = requester({
     hostname: target.hostname,
@@ -448,28 +505,12 @@ export function proxyAnthropicStream(keyEntry, openaiReq, model, res, pool, log,
     if (proxyRes.statusCode >= 400) {
       let errBody = '';
       proxyRes.on('data', (c) => (errBody += c));
-      proxyRes.on('end', () => {
-        pool.markError(keyEntry, proxyRes.statusCode, errBody);
-
-        if ([401, 403, 429].includes(proxyRes.statusCode) && retryCount < maxRetries) {
-          const retryKey = pool.pick();
-          if (retryKey && retryKey.id !== keyEntry.id) {
-            // 已经写了 200 header，只能发 error event
-            const event = { type: 'error', error: { type: 'api_error', message: `Retrying with another key...` } };
-            res.write(`event: error\ndata: ${JSON.stringify(event)}\n\n`);
-            // 实际上没法重试了（header 已发），记录日志
-            log('warn', `Stream error ${proxyRes.statusCode} but headers already sent, cannot retry`);
-            res.end();
-            return;
-          }
-        }
-
-        const event = { type: 'error', error: { type: 'api_error', message: errBody } };
-        res.write(`event: error\ndata: ${JSON.stringify(event)}\n\n`);
-        res.end();
-      });
+      proxyRes.on('end', () => handleUpstreamError(proxyRes.statusCode, errBody));
       return;
     }
+
+    // 上游成功，发送 200 header
+    ensureHeaders();
 
     let buffer = '';
     let usage = null;
@@ -531,7 +572,6 @@ export function proxyAnthropicStream(keyEntry, openaiReq, model, res, pool, log,
     pool.markError(keyEntry, 0, err.message);
     log('error', `Anthropic stream proxy error [${keyEntry.id}]: ${err.message}`);
     if (!res.headersSent) {
-      const event = { type: 'error', error: { type: 'proxy_error', message: err.message } };
       res.write(`event: error\ndata: ${JSON.stringify(event)}\n\n`);
     }
     res.end();
