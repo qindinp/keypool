@@ -13,9 +13,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TUNNEL_URL_PATH = resolve(__dirname, '..', '.tunnel-url');
 const URL_DISCOVERY_TIMEOUT_MS = 25_000;
-const HEALTH_RECHECK_INTERVAL_MS = 30_000;
+const HEALTH_RECHECK_INTERVAL_MS = 120_000;
 const HEALTH_VERIFY_ATTEMPTS = 5;
 const HEALTH_VERIFY_DELAY_MS = 3_000;
+const CONSECUTIVE_FAILURES_THRESHOLD = 3;
 
 let tunnelProcess = null;
 let tunnelWatchTimer = null;
@@ -23,6 +24,7 @@ let tunnelDiscoveryTimer = null;
 let tunnelCurrentUrl = null;
 let tunnelRestartTimer = null;
 let restartPlanned = false;
+let consecutiveHealthFailures = 0;
 
 /**
  * 从 SSH 隧道输出中提取公网 URL
@@ -208,15 +210,24 @@ export function startTunnel(port, opts = {}) {
         console.log('');
 
         tunnelCurrentUrl = cleanUrl;
+        consecutiveHealthFailures = 0;
         try {
           writeFileSync(TUNNEL_URL_PATH, cleanUrl + '\n', 'utf-8');
         } catch {}
 
         tunnelWatchTimer = setInterval(async () => {
           if (!tunnelCurrentUrl || restartPlanned) return;
-          const result = await probePublicHealth(tunnelCurrentUrl, 10_000);
+          const result = await probePublicHealth(tunnelCurrentUrl, 15_000);
           if (!result.ok) {
-            scheduleRestart(runtimeOpts, log, `SSH 隧道健康检查失败 (${result.status || result.text})`, 5_000);
+            consecutiveHealthFailures++;
+            if (consecutiveHealthFailures >= CONSECUTIVE_FAILURES_THRESHOLD) {
+              consecutiveHealthFailures = 0;
+              scheduleRestart(runtimeOpts, log, `SSH 隧道健康检查连续 ${CONSECUTIVE_FAILURES_THRESHOLD} 次失败 (${result.status || result.text})`, 5_000);
+            } else {
+              log('warn', `SSH 隧道健康检查失败 (${result.status || result.text})，连续 ${consecutiveHealthFailures}/${CONSECUTIVE_FAILURES_THRESHOLD} 次，跳过重建`);
+            }
+          } else {
+            consecutiveHealthFailures = 0;
           }
         }, HEALTH_RECHECK_INTERVAL_MS);
 
