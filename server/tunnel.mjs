@@ -128,13 +128,18 @@ async function waitForHealthyPublicUrl(publicUrl, log) {
 }
 
 function scheduleRestart(opts, log, reason, delayMs = 3_000) {
-  if (restartPlanned) return;
+  // 如果已有重启计划，取消旧的，重新调度（避免静默丢弃后续失败）
+  if (tunnelRestartTimer) {
+    clearTimeout(tunnelRestartTimer);
+    tunnelRestartTimer = null;
+  }
   restartPlanned = true;
   clearTunnelUrlFile();
   clearTimers();
   log('warn', `${reason}，${Math.round(delayMs / 1000)} 秒后重建 SSH 隧道...`);
   tunnelRestartTimer = setTimeout(() => {
     restartPlanned = false;
+    tunnelRestartTimer = null;
     startTunnel(opts.port, opts);
   }, delayMs);
   if (tunnelProcess) {
@@ -158,6 +163,8 @@ export function startTunnel(port, opts = {}) {
 
   clearTimers();
   clearTunnelUrlFile();
+  restartPlanned = false;  // 确保启动时状态干净
+  consecutiveHealthFailures = 0;
 
   let cmd, args;
   if (service === 'serveo.net') {
@@ -255,9 +262,14 @@ export function startTunnel(port, opts = {}) {
     tunnelProcess = null;
     if (restartPlanned) return;
     clearTunnelUrlFile();
+    consecutiveHealthFailures = 0;
     if (code !== 0 && code !== null) {
       log('warn', `SSH 隧道断开 (code ${code})，30 秒后重连...`);
-      tunnelRestartTimer = setTimeout(() => startTunnel(port, runtimeOpts), 30000);
+      tunnelRestartTimer = setTimeout(() => {
+        restartPlanned = false;
+        tunnelRestartTimer = null;
+        startTunnel(port, runtimeOpts);
+      }, 30000);
     }
   });
 

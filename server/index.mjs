@@ -252,8 +252,8 @@ function shutdown(signal) {
     log('info', '服务器已关闭');
     process.exit(0);
   });
-  // 5 秒后强制退出
-  setTimeout(() => process.exit(1), 5000);
+  // 15 秒后强制退出（给 SSE 流式请求留足时间）
+  setTimeout(() => process.exit(1), 15000);
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
