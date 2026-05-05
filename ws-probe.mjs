@@ -48,13 +48,26 @@ function api(path, cookie) {
 }
 
 // ─── WebSocket 帧解析 ───────────────────────────────────────────
+/**
+ * 解析 WebSocket 帧，支持分片消息拼接
+ *
+ * WebSocket 协议中，一条消息可能被拆成多个帧：
+ *   - 首帧: opcode=0x01(text)/0x02(binary), fin=0
+ *   - 后续帧: opcode=0x00(continuation), fin=0
+ *   - 末帧: opcode=0x00(continuation), fin=1
+ *
+ * 返回已拼接完成的消息数组，每条消息保留首帧的 opcode。
+ * 遇到不完整帧时保留在 remaining 缓冲区中。
+ */
 function parseFrames(buffer) {
-  const frames = [];
+  const messages = [];
   let offset = 0;
-  
+  let fragOpcode = 0;
+  let fragParts = [];
+
   while (offset < buffer.length) {
     if (buffer.length - offset < 2) break;
-    
+
     const byte1 = buffer[offset];
     const byte2 = buffer[offset + 1];
     const fin = (byte1 & 0x80) !== 0;
@@ -62,7 +75,7 @@ function parseFrames(buffer) {
     const masked = (byte2 & 0x80) !== 0;
     let payloadLen = byte2 & 0x7f;
     let headerLen = 2;
-    
+
     if (payloadLen === 126) {
       if (buffer.length - offset < 4) break;
       payloadLen = buffer.readUInt16BE(offset + 2);
@@ -72,26 +85,46 @@ function parseFrames(buffer) {
       payloadLen = Number(buffer.readBigUInt64BE(offset + 2));
       headerLen = 10;
     }
-    
+
     let maskKey = null;
     if (masked) {
+      if (buffer.length - offset < headerLen + 4) break;
       maskKey = buffer.slice(offset + headerLen, offset + headerLen + 4);
       headerLen += 4;
     }
-    
+
     const totalLen = headerLen + payloadLen;
     if (buffer.length - offset < totalLen) break;
-    
+
     const payload = buffer.slice(offset + headerLen, offset + totalLen);
     if (masked) {
       for (let i = 0; i < payload.length; i++) payload[i] ^= maskKey[i % 4];
     }
-    
-    frames.push({ opcode, payload: Buffer.from(payload), fin });
+
     offset += totalLen;
+
+    if (opcode === 0x00) {
+      // continuation frame
+      fragParts.push(Buffer.from(payload));
+      if (fin) {
+        messages.push({ opcode: fragOpcode, payload: Buffer.concat(fragParts) });
+        fragOpcode = 0;
+        fragParts = [];
+      }
+    } else if (opcode === 0x01 || opcode === 0x02) {
+      if (fin) {
+        messages.push({ opcode, payload: Buffer.from(payload) });
+      } else {
+        fragOpcode = opcode;
+        fragParts = [Buffer.from(payload)];
+      }
+    } else {
+      // control frames (ping/pong/close) are always complete
+      messages.push({ opcode, payload: Buffer.from(payload) });
+    }
   }
-  
-  return { frames, remaining: buffer.slice(offset) };
+
+  return { messages, remaining: buffer.slice(offset) };
 }
 
 function buildFrame(opcode, data, mask = false) {
@@ -218,17 +251,17 @@ async function main() {
 
     function processBuffer(chunk) {
       buf = buf.length > 0 ? Buffer.concat([buf, chunk]) : chunk;
-      const { frames, remaining } = parseFrames(buf);
+      const { messages, remaining } = parseFrames(buf);
       buf = remaining;
       
-      for (const frame of frames) {
+      for (const msg of messages) {
         const now = new Date().toISOString().slice(11, 23);
         msgCount++;
         
-        if (frame.opcode === 0x01) {
+        if (msg.opcode === 0x01) {
           // Text
-          const text = frame.payload.toString('utf-8');
-          console.log(`\n[${now}] 📨 #${msgCount} 文本 (${frame.payload.length}b):`);
+          const text = msg.payload.toString('utf-8');
+          console.log(`\n[${now}] 📨 #${msgCount} 文本 (${msg.payload.length}b):`);
           try {
             const json = JSON.parse(text);
             console.log(JSON.stringify(json, null, 2));
@@ -242,22 +275,22 @@ async function main() {
           } catch {
             console.log(text.slice(0, 500));
           }
-        } else if (frame.opcode === 0x02) {
+        } else if (msg.opcode === 0x02) {
           // Binary
-          console.log(`\n[${now}] 📦 #${msgCount} 二进制 (${frame.payload.length}b)`);
+          console.log(`\n[${now}] 📦 #${msgCount} 二进制 (${msg.payload.length}b)`);
           try {
-            console.log('文本解析:', frame.payload.toString('utf-8').slice(0, 300));
+            console.log('文本解析:', msg.payload.toString('utf-8').slice(0, 300));
           } catch {}
-        } else if (frame.opcode === 0x08) {
+        } else if (msg.opcode === 0x08) {
           console.log(`\n[${now}] 🔌 收到关闭帧`);
           socket.end();
-        } else if (frame.opcode === 0x09) {
+        } else if (msg.opcode === 0x09) {
           console.log(`[${now}] 💓 Ping → Pong`);
           socket.write(buildFrame(0x0A, '', false));
-        } else if (frame.opcode === 0x0A) {
+        } else if (msg.opcode === 0x0A) {
           console.log(`[${now}] 💓 Pong`);
         } else {
-          console.log(`\n[${now}] ❓ 帧 0x${frame.opcode.toString(16)} (${frame.payload.length}b)`);
+          console.log(`\n[${now}] ❓ 帧 0x${msg.opcode.toString(16)} (${msg.payload.length}b)`);
         }
       }
     }

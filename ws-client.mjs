@@ -56,19 +56,61 @@ function wsFrame(data, opcode = 0x01) {
   return Buffer.concat([header, masked]);
 }
 
+/**
+ * 解析 WebSocket 帧，支持分片消息拼接
+ *
+ * WebSocket 协议中，一条消息可能被拆成多个帧：
+ *   - 首帧: opcode=0x01(text)/0x02(binary), fin=0
+ *   - 后续帧: opcode=0x00(continuation), fin=0
+ *   - 末帧: opcode=0x00(continuation), fin=1
+ *
+ * 返回已拼接完成的消息数组，每条消息保留首帧的 opcode。
+ * 遇到不完整帧时保留在 remaining 缓冲区中。
+ */
 function parseFrames(buf) {
-  const frames = []; let off = 0;
+  const messages = [];
+  let off = 0;
+  // 分片缓冲：fragOpcode 记录首帧 opcode，fragParts 累积各帧 payload
+  let fragOpcode = 0;
+  let fragParts = [];
+
   while (off + 2 <= buf.length) {
     const byte1 = buf[off], byte2 = buf[off + 1];
+    const fin = (byte1 & 0x80) !== 0;
     const opcode = byte1 & 0x0f;
     let payloadLen = byte2 & 0x7f, hdrLen = 2;
     if (payloadLen === 126) { if (off + 4 > buf.length) break; payloadLen = buf.readUInt16BE(off + 2); hdrLen = 4; }
     else if (payloadLen === 127) { if (off + 10 > buf.length) break; payloadLen = Number(buf.readBigUInt64BE(off + 2)); hdrLen = 10; }
     if (off + hdrLen + payloadLen > buf.length) break;
-    frames.push({ opcode, payload: buf.slice(off + hdrLen, off + hdrLen + payloadLen) });
+
+    const payload = buf.slice(off + hdrLen, off + hdrLen + payloadLen);
     off += hdrLen + payloadLen;
+
+    if (opcode === 0x00) {
+      // continuation frame
+      fragParts.push(payload);
+      if (fin) {
+        messages.push({ opcode: fragOpcode, payload: Buffer.concat(fragParts) });
+        fragOpcode = 0;
+        fragParts = [];
+      }
+    } else if (opcode === 0x01 || opcode === 0x02) {
+      // text or binary — may be a fragment or a complete message
+      if (fin) {
+        // complete single-frame message
+        messages.push({ opcode, payload });
+      } else {
+        // first fragment — start buffering
+        fragOpcode = opcode;
+        fragParts = [payload];
+      }
+    } else {
+      // control frames (ping/pong/close) are always complete, emit immediately
+      messages.push({ opcode, payload });
+    }
   }
-  return { frames, remaining: buf.slice(off) };
+
+  return { messages, remaining: buf.slice(off) };
 }
 
 // ─── WebSocket Client ────────────────────────────────────────────
@@ -233,16 +275,19 @@ class MiMoGateway {
   }
 
   _processFrames(onFrame) {
-    const { frames, remaining } = parseFrames(this.buf);
+    const { messages, remaining } = parseFrames(this.buf);
     this.buf = remaining;
-    for (const f of frames) {
-      if (f.opcode === 0x01) {
-        try { onFrame(JSON.parse(f.payload.toString())); } catch {}
-      } else if (f.opcode === 0x08) {
-        const code = f.payload.length >= 2 ? f.payload.readUInt16BE(0) : 0;
+    for (const msg of messages) {
+      if (msg.opcode === 0x01) {
+        try { onFrame(JSON.parse(msg.payload.toString())); } catch {}
+      } else if (msg.opcode === 0x02) {
+        // binary frame — try text decode as fallback
+        try { onFrame(JSON.parse(msg.payload.toString())); } catch {}
+      } else if (msg.opcode === 0x08) {
+        const code = msg.payload.length >= 2 ? msg.payload.readUInt16BE(0) : 0;
         if (code !== 1000) console.log('🔌 关闭:', code);
         this.socket.end();
-      } else if (f.opcode === 0x09) {
+      } else if (msg.opcode === 0x09) {
         this.socket.write(Buffer.from([0x8a, 0x00]));
       }
     }
