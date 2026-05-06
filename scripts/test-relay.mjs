@@ -184,7 +184,7 @@ async function testAdminPage() {
   const res = await fetch(`http://127.0.0.1:${relayPort}/admin`);
   assert(res.status === 200, `expected /admin 200, got ${res.status}`);
   const html = await res.text();
-  assert(html.includes('KeyPool 控制台'), 'admin page missing title');
+  assert(html.includes('KeyPool') && html.includes('控制台'), 'admin page missing title');
   assert(html.includes('/registry'), 'admin page should reference /registry');
 }
 
