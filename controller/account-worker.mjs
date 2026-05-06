@@ -39,6 +39,7 @@ function normalizeShareUrl(url) {
 function getShareUrlPriority(url) {
   try {
     const host = new URL(url).hostname.toLowerCase();
+    if (host.endsWith('.ts.net')) return 0;
     if (host.endsWith('.lhr.life')) return 1;
     if (host.endsWith('.serveo.net')) return 2;
     if (host.endsWith('.localhost.run')) return 3;
@@ -56,6 +57,7 @@ function isValidShareUrl(url) {
     if (host === 'admin.localhost.run') return false;
     if (host === 'localhost.run') return false;
     if (host === 'twitter.com') return false;
+    if (host.endsWith('.ts.net')) return true;
     if (host.endsWith('.lhr.life')) return true;
     if (host.endsWith('.serveo.net')) return true;
     if (host.endsWith('.localhost.run')) return true;
@@ -142,9 +144,9 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '必须执行等价操作：进入 keypool 目录，git fetch origin，然后 git reset --hard origin/main。',
         '同步完成后，请输出一行 `GIT_HEAD=<当前提交SHA>`。',
         '不要覆盖 SOUL.md，不要修改任何全局安全配置。',
-        '同步完成后在 keypool 目录启动 node server.mjs。',
+        '同步完成后在 keypool 目录启动 node server/index.mjs。',
         '启动后检查 http://127.0.0.1:9200/health 是否可访问。',
-        '如果服务会异步建立 SSH 隧道，请额外等待最多 35 秒，检查 keypool/.tunnel-url 是否出现。',
+        '如果服务会异步建立隧道（Tailscale Funnel 或 SSH），请额外等待最多 35 秒，检查 keypool/.tunnel-url 是否出现。',
         '如果 keypool/.tunnel-url 存在，请读取其中地址并按 `SHARE_URL=<地址>` 单独输出一行。',
         '如果没有拿到对外地址，也请明确输出 `SHARE_URL_MISSING`。',
         '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
@@ -250,8 +252,8 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '1. keypool/.tunnel-url 是否存在；如果存在，读取内容并按 `SHARE_URL=<地址>` 单独输出一行。',
         '2. 如果不存在，请输出 `SHARE_URL_MISSING`。',
         '3. 输出 `TUNNEL_FILE=present` 或 `TUNNEL_FILE=missing`。',
-        '4. 输出 `SSH_TUNNEL=running` 或 `SSH_TUNNEL=missing`，用于表示 ssh -R 隧道进程是否存在。',
-        '5. 如可行，附带 /tmp/keypool.log 最后 20 行中的 tunnel/ssh 相关关键信息。',
+        '4. 输出 `TAILSCALE_FUNNEL=running` 或 `TAILSCALE_FUNNEL=missing`，用于表示 Tailscale Funnel 是否正常工作。',
+        '5. 如可行，附带 /tmp/keypool.log 最后 20 行中的 tunnel/tailscale 相关关键信息。',
         '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
         `  ${marker}_OK`,
         `  ${marker}_FAIL`,
