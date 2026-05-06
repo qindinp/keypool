@@ -90,7 +90,7 @@ function waitForPortOpen(host, port, timeoutMs = 1200) {
 async function main() {
   // manager.mjs 是根目录的 re-export 入口，指向 src/manager/index.mjs
   const managerChild = createManagedChild('manager', [resolve(ROOT_DIR, 'manager.mjs')]);
-  const relayChild = createManagedChild('relay', [resolve(ROOT_DIR, 'relay/server.mjs')], {
+  const relayChild = createManagedChild('relay', [resolve(ROOT_DIR, 'bin/relay.mjs')], {
     RELAY_PORT: String(relayPort),
     RELAY_HOST: relayHost,
   });

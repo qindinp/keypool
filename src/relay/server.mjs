@@ -24,11 +24,11 @@ const port = parseInt(process.env.RELAY_PORT || '9300', 10);
 const host = process.env.RELAY_HOST || '127.0.0.1';
 const registryPath = process.env.RELAY_REGISTRY_PATH
   ? resolve(process.env.RELAY_REGISTRY_PATH)
-  : resolve(__dirname, '..', '.manager', 'registry.json');
+  : resolve(__dirname, '..', '..', '.manager', 'registry.json');
 const registry = createRegistry(registryPath);
 const MAX_ATTEMPTS = parseInt(process.env.RELAY_MAX_ATTEMPTS || '3', 10);
-const adminHtmlPath = resolve(__dirname, 'admin.html');
-const rootDir = resolve(__dirname, '..');
+const rootDir = resolve(__dirname, '..', '..');
+const adminHtmlPath = resolve(rootDir, 'relay', 'admin.html');
 const managerDataDir = resolve(rootDir, '.manager');
 const accountsPath = getAccountsPath();
 const appBgScriptPath = resolve(rootDir, 'scripts', 'app-bg.mjs');
@@ -83,8 +83,8 @@ function passthroughHeaders(headers) {
   return next;
 }
 
-function isStreamingChatRequest(path, body) {
-  if (!path.startsWith('/v1/chat/completions')) return false;
+function isStreamingRequest(path, body) {
+  if (!(path.startsWith('/v1/chat/completions') || path.startsWith('/v1/messages'))) return false;
   if (!body) return false;
   try {
     const parsed = JSON.parse(body);
@@ -248,7 +248,7 @@ async function handleProxy(req, res, path) {
   }
 
   const body = req.method === 'GET' ? null : await readBody(req);
-  if (isStreamingChatRequest(path, body)) {
+  if (isStreamingRequest(path, body)) {
     return handleStreamProxy(req, res, path, body);
   }
 
@@ -321,14 +321,15 @@ const server = createServer(async (req, res) => {
     if (
       url.pathname === '/v1/models' ||
       url.pathname === '/v1/embeddings' ||
-      url.pathname === '/v1/chat/completions'
+      url.pathname === '/v1/chat/completions' ||
+      url.pathname === '/v1/messages'
     ) {
       return handleProxy(req, res, url.pathname + url.search);
     }
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/restart /api/control/app/status /api/control/app/start /api/control/app/stop /api/control/all/start /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions',
+      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/restart /api/control/app/status /api/control/app/start /api/control/app/stop /api/control/all/start /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions /v1/messages',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });
