@@ -197,22 +197,27 @@ export class DeployClient {
             return;
           }
 
-          const sk = p.sessionKey || 'main';
-          this.request('chat.history', { sessionKey: sk, limit: 20 }, 15000)
+          const sk = p.sessionKey || this._deploySession || 'main';
+          this.request('chat.history', { sessionKey: sk, limit: 3 }, 15000)
             .then(hist => {
-              const msgs = Array.isArray(hist?.messages) ? hist.messages : [];
-              const texts = msgs.map(msg => ({
-                role: String(msg?.role || '').toLowerCase(),
-                text: extractTextContent(msg?.content).trim(),
-              })).filter(item => item.text);
+              try {
+                const msgs = Array.isArray(hist?.messages) ? hist.messages : [];
+                const texts = msgs.map(msg => ({
+                  role: String(msg?.role || '').toLowerCase(),
+                  text: extractTextContent(msg?.content).trim(),
+                })).filter(item => item.text);
 
-              const assistantTexts = texts.filter(item => item.role === 'assistant');
-              const matching = matcher
-                ? assistantTexts.filter(item => item.text.includes(matcher)).map(item => item.text)
-                : [];
-              const fallbackAssistant = assistantTexts.map(item => item.text);
-              const fallbackAny = texts.map(item => item.text);
-              resolveChat(matching.at(-1) || eventTextFallback || fallbackAssistant.at(-1) || fallbackAny.at(-1) || '');
+                const assistantTexts = texts.filter(item => item.role === 'assistant');
+                const matching = matcher
+                  ? assistantTexts.filter(item => item.text.includes(matcher)).map(item => item.text)
+                  : [];
+                const fallbackAssistant = assistantTexts.map(item => item.text);
+                const fallbackAny = texts.map(item => item.text);
+                resolveChat(matching.at(-1) || eventTextFallback || fallbackAssistant.at(-1) || fallbackAny.at(-1) || '');
+              } catch (parseErr) {
+                this.log?.('warn', `chat.history 解析失败: ${parseErr.message}`);
+                resolveChat(eventTextFallback || '');
+              }
             })
             .catch(() => resolveChat(eventTextFallback || ''));
           return;
@@ -327,6 +332,10 @@ export class DeployClient {
       ? { timeoutMs: options, matchText: null }
       : { timeoutMs: options?.timeoutMs ?? this.config.chatTimeout, matchText: options?.matchText ?? null };
 
+    // 使用独立 session 避免与主会话互相干扰，同时保证 history 响应体积可控
+    const deploySession = `deploy-${Date.now().toString(36)}`;
+    this._deploySession = deploySession;
+
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this._chatResolve = null;
@@ -344,7 +353,7 @@ export class DeployClient {
       this._chatReject = (err) => { clearTimeout(timeout); reject(err); };
 
       this.request('chat.send', {
-        sessionKey: 'main',
+        sessionKey: deploySession,
         message,
         deliver: true,
         idempotencyKey: randomUUID(),
