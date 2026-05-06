@@ -98,6 +98,11 @@ export function proxyRequest(opts) {
     } catch {}
   }
 
+  // body 被修改时必须更新 content-length，否则上游会截断请求体
+  if (proxyBody !== body) {
+    headers['content-length'] = Buffer.byteLength(proxyBody);
+  }
+
   const requester = target.isHttps ? httpsRequest : httpRequest;
 
   const proxyReq = requester({
