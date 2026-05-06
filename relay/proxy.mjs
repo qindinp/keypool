@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { gunzipSync, inflateSync, brotliDecompressSync } from 'node:zlib';
 
 function normalizeBase(baseUrl) {
   return String(baseUrl || '').replace(/\/$/, '');
@@ -10,17 +11,41 @@ function pickImpl(protocol) {
 }
 
 function collectResponse(res) {
-  return new Promise((resolve) => {
-    let data = '';
-    res.on('data', chunk => data += chunk);
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    res.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     res.on('end', () => {
       resolve({
         statusCode: res.statusCode || 502,
         headers: res.headers,
-        body: data,
+        body: Buffer.concat(chunks),
       });
     });
+    res.on('error', reject);
   });
+}
+
+function copyProxyHeaders(headers = {}) {
+  const copied = { ...headers };
+  delete copied['content-length'];
+  return copied;
+}
+
+function decodeResponseBuffer(headers, bodyBuffer) {
+  const encoding = String(headers['content-encoding'] || '').toLowerCase();
+  try {
+    if (encoding.includes('gzip')) {
+      return { buffer: gunzipSync(bodyBuffer), decoded: true, encoding: 'gzip' };
+    }
+    if (encoding.includes('deflate')) {
+      return { buffer: inflateSync(bodyBuffer), decoded: true, encoding: 'deflate' };
+    }
+    if (encoding.includes('br')) {
+      return { buffer: brotliDecompressSync(bodyBuffer), decoded: true, encoding: 'br' };
+    }
+  } catch {
+  }
+  return { buffer: bodyBuffer, decoded: false, encoding: '' };
 }
 
 function buildRequestOptions(target, method, headers = {}) {
@@ -54,8 +79,21 @@ export function proxyJson({ baseUrl, method, path, headers = {}, body, timeoutMs
     const req = reqImpl(buildRequestOptions(target, method, {
       'content-type': 'application/json',
       accept: 'application/json',
+      'accept-encoding': 'identity',
       ...headers,
-    }), async (res) => resolve(await collectResponse(res)));
+    }), async (res) => {
+      const result = await collectResponse(res);
+      const decoded = decodeResponseBuffer(result.headers, result.body);
+      const responseHeaders = copyProxyHeaders(result.headers);
+      if (decoded.decoded) {
+        delete responseHeaders['content-encoding'];
+      }
+      resolve({
+        statusCode: result.statusCode,
+        headers: responseHeaders,
+        body: decoded.buffer,
+      });
+    });
 
     attachAbort(req, onAbort);
     req.on('error', reject);
@@ -99,12 +137,14 @@ export function probeHealth({ baseUrl, timeoutMs = 15_000 }) {
   return new Promise((resolve) => {
     const req = reqImpl(buildRequestOptions(target, 'GET', {
       accept: 'application/json',
+      'accept-encoding': 'identity',
     }), async (res) => {
       const result = await collectResponse(res);
+      const decoded = decodeResponseBuffer(result.headers, result.body);
       resolve({
         ok: result.statusCode >= 200 && result.statusCode < 300,
         statusCode: result.statusCode,
-        body: result.body,
+        body: decoded.buffer.toString('utf-8'),
       });
     });
 
