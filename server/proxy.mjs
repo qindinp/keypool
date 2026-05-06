@@ -10,9 +10,36 @@
 
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB
 const PROXY_TIMEOUT_MS = 120_000;         // 2 分钟
+
+function copySuccessHeaders(proxyRes) {
+  const headers = { ...proxyRes.headers };
+  delete headers['content-length'];
+  return headers;
+}
+
+function decodeResponseStream(proxyRes) {
+  const encoding = String(proxyRes.headers['content-encoding'] || '').toLowerCase();
+  if (encoding.includes('gzip')) {
+    const stream = createGunzip();
+    proxyRes.pipe(stream);
+    return { stream, decoded: true, encoding: 'gzip' };
+  }
+  if (encoding.includes('deflate')) {
+    const stream = createInflate();
+    proxyRes.pipe(stream);
+    return { stream, decoded: true, encoding: 'deflate' };
+  }
+  if (encoding.includes('br')) {
+    const stream = createBrotliDecompress();
+    proxyRes.pipe(stream);
+    return { stream, decoded: true, encoding: 'br' };
+  }
+  return { stream: proxyRes, decoded: false, encoding: '' };
+}
 
 /** 从 SSE chunk 中解析 usage 信息 */
 function parseStreamChunk(text, onData) {
@@ -84,6 +111,8 @@ export function proxyRequest(opts) {
   const target = pool.getTargetFor(keyEntry);
 
   delete headers['host'];
+  delete headers['content-encoding'];
+  headers['accept-encoding'] = 'identity';
   headers['authorization'] = `Bearer ${keyEntry.key}`;
 
   // 流式请求注入 stream_options 以获取 usage 统计
@@ -153,8 +182,9 @@ export function proxyRequest(opts) {
       let headersSent = false;
       let usage = null;
       let lineBuf = Buffer.alloc(0); // 用 Buffer 处理 UTF-8 边界
+      const upstream = proxyRes;
 
-      proxyRes.on('data', (chunk) => {
+      upstream.on('data', (chunk) => {
         if (!headersSent) {
           // 检查第一个 chunk 中是否包含错误 SSE 事件
           const text = lineBuf.toString() + chunk.toString();
@@ -168,8 +198,8 @@ export function proxyRequest(opts) {
           const firstLine = text.slice(0, firstNewline).trim();
           if (firstLine.startsWith('event: error')) {
             let errBody = text;
-            proxyRes.on('data', (c) => { errBody += c.toString(); });
-            proxyRes.on('end', () => {
+            upstream.on('data', (c) => { errBody += c.toString(); });
+            upstream.on('end', () => {
               pool.markError(keyEntry, statusCode, errBody);
               if ([401, 403, 429].includes(statusCode) && retryCount < maxRetries) {
                 const retryKey = pool.pickOther(keyEntry.id);
@@ -179,7 +209,7 @@ export function proxyRequest(opts) {
                 }
               }
               if (!res.headersSent) {
-                res.writeHead(statusCode, proxyRes.headers);
+                res.writeHead(statusCode, copySuccessHeaders(proxyRes));
               }
               res.end(errBody);
             });
@@ -188,7 +218,7 @@ export function proxyRequest(opts) {
 
           // 正常流式数据，发送 header
           headersSent = true;
-          res.writeHead(statusCode, proxyRes.headers);
+          res.writeHead(statusCode, copySuccessHeaders(proxyRes));
           // 处理已缓冲的数据
           res.write(chunk);
           // 用 Buffer 拼接处理 UTF-8 边界
@@ -213,10 +243,10 @@ export function proxyRequest(opts) {
         parseStreamChunk(text, (data) => { if (data.usage) usage = data.usage; });
       }
 
-      proxyRes.on('end', () => {
+      upstream.on('end', () => {
         if (!headersSent) {
           headersSent = true;
-          res.writeHead(statusCode, proxyRes.headers);
+          res.writeHead(statusCode, copySuccessHeaders(proxyRes));
         }
         // 处理 buffer 中剩余数据
         if (lineBuf.length > 0) {
@@ -228,17 +258,33 @@ export function proxyRequest(opts) {
         log('info', `✓ ${targetPath} [${keyEntry.id}] ${tokens} tokens (stream)`);
       });
     } else {
-      let respBody = '';
-      proxyRes.on('data', (c) => (respBody += c));
-      proxyRes.on('end', () => {
-        res.end(respBody);
+      const { stream: responseStream, decoded, encoding } = decodeResponseStream(proxyRes);
+      const chunks = [];
+      responseStream.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+      responseStream.on('end', () => {
+        const respBuffer = Buffer.concat(chunks);
+        const respBody = respBuffer.toString('utf-8');
+        const successHeaders = copySuccessHeaders(proxyRes);
+        if (decoded) {
+          delete successHeaders['content-encoding'];
+        }
+        res.writeHead(statusCode, successHeaders);
+        res.end(respBuffer);
         let tokens = 0;
         try {
           const parsed = JSON.parse(respBody);
           tokens = parsed.usage?.total_tokens || 0;
         } catch {}
         pool.markSuccess(keyEntry, tokens);
-        log('info', `✓ ${targetPath} [${keyEntry.id}] ${tokens} tokens`);
+        log('info', `✓ ${targetPath} [${keyEntry.id}] ${tokens} tokens${decoded ? ` (decoded ${encoding})` : ''}`);
+      });
+      responseStream.on('error', (err) => {
+        pool.markError(keyEntry, 0, err.message);
+        log('error', `Response decode error [${keyEntry.id}]:`, err.message);
+        if (!res.headersSent) {
+          res.writeHead(502, { 'content-type': 'application/json' });
+        }
+        res.end(JSON.stringify({ error: { message: 'Upstream decode error', type: 'proxy_error' } }));
       });
     }
   });
