@@ -144,6 +144,12 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '必须执行等价操作：进入 keypool 目录，git fetch origin，然后 git reset --hard origin/main。',
         '同步完成后，请输出一行 `GIT_HEAD=<当前提交SHA>`。',
         '不要覆盖 SOUL.md，不要修改任何全局安全配置。',
+        config.tunnelType === 'tailscale'
+          ? `本次要求优先使用 Tailscale 隧道。请在启动服务前确保以下环境：TAILSCALE_HOSTNAME=${config.tailscaleHostname}、TAILSCALE_FUNNEL=${config.tailscaleFunnel ? 'true' : 'false'}、TAILSCALE_AUTO_INSTALL=${config.tailscaleAutoInstall ? 'true' : 'false'}${config.tailscaleAuthKey ? `、TAILSCALE_AUTHKEY=${config.tailscaleAuthKey}` : ''}。`
+          : `本次要求使用 SSH 隧道，服务启动时应使用 tunnelType=${config.tunnelType}、tunnelService=${config.tunnelService}。`,
+        config.tunnelType === 'tailscale'
+          ? '如果实例里未安装 tailscale，允许并应当自动安装；如果未登录且已提供 TAILSCALE_AUTHKEY，必须走免交互登录；如果 tailscale 最终失败，再回退到 SSH 隧道。'
+          : '如 SSH 隧道失败，请在回复里明确说明。',
         '同步完成后在 keypool 目录启动 node server/index.mjs。',
         '启动后检查 http://127.0.0.1:9200/health 是否可访问。',
         '如果服务会异步建立隧道（Tailscale Funnel 或 SSH），请额外等待最多 35 秒，检查 keypool/.tunnel-url 是否出现。',

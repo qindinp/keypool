@@ -14,5 +14,11 @@ export function createConfig(env = process.env) {
     chatTimeout: 120_000,
     retryBaseDelay: 5_000,
     retryMaxDelay: 60_000,
+    tunnelType: env.TUNNEL_TYPE || 'tailscale',
+    tunnelService: env.TUNNEL_SERVICE || 'localhost.run',
+    tailscaleAuthKey: env.TAILSCALE_AUTHKEY || '',
+    tailscaleHostname: env.TAILSCALE_HOSTNAME || 'keypool',
+    tailscaleFunnel: env.TAILSCALE_FUNNEL !== 'false',
+    tailscaleAutoInstall: env.TAILSCALE_AUTO_INSTALL !== 'false',
   };
 }

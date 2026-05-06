@@ -95,6 +95,34 @@ function isTailscaleInstalled() {
   return run('which', ['tailscale']).ok;
 }
 
+function canAutoInstallTailscale(tailscaleConfig = {}) {
+  return tailscaleConfig.autoInstall !== false;
+}
+
+function installTailscale(log) {
+  log('info', '检测到未安装 Tailscale，尝试自动安装...');
+  const script = [
+    'set -e',
+    'if command -v tailscale >/dev/null 2>&1; then exit 0; fi',
+    'if command -v curl >/dev/null 2>&1; then',
+    '  curl -fsSL https://tailscale.com/install.sh | sh',
+    'elif command -v wget >/dev/null 2>&1; then',
+    '  wget -qO- https://tailscale.com/install.sh | sh',
+    'else',
+    '  echo "Neither curl nor wget is available" >&2',
+    '  exit 1',
+    'fi',
+  ].join('; ');
+
+  const result = run('sh', ['-lc', JSON.stringify(script)], { timeout: 180_000 });
+  if (!result.ok) {
+    log('error', `Tailscale 自动安装失败: ${result.stderr || result.stdout}`);
+    return false;
+  }
+  log('info', '✅ Tailscale 自动安装完成');
+  return isTailscaleInstalled();
+}
+
 function isTailscaleLoggedIn() {
   const result = run('tailscale', ['status', '--json'], { timeout: 5_000 });
   if (!result.ok) return false;
@@ -187,17 +215,27 @@ async function startTailscaleFunnel(port, opts) {
 
   // 1. 检查安装
   if (!isTailscaleInstalled()) {
-    log('error', '❌ Tailscale 未安装，请先运行: curl -fsSL https://tailscale.com/install.sh | sh');
-    return null;
+    if (canAutoInstallTailscale(tailscaleConfig)) {
+      const installed = installTailscale(log);
+      if (!installed) {
+        log('error', '❌ Tailscale 自动安装失败，将回退到 SSH 隧道');
+        throw new Error('tailscale auto install failed');
+      }
+    } else {
+      log('error', '❌ Tailscale 未安装，且已禁用自动安装');
+      throw new Error('tailscale not installed');
+    }
   }
 
   // 2. 检查登录状态
   if (!isTailscaleLoggedIn()) {
     if (!authKey) {
-      log('error', '❌ Tailscale 未登录，请提供 authKey 或运行 tailscale up 手动登录');
-      return null;
+      log('error', '❌ Tailscale 未登录，且未提供 authKey，无法免交互登录');
+      throw new Error('tailscale auth key missing');
     }
-    if (!tailscaleLogin(authKey, hostname, log)) return null;
+    if (!tailscaleLogin(authKey, hostname, log)) {
+      throw new Error('tailscale login failed');
+    }
   }
 
   // 3. 获取 FQDN
