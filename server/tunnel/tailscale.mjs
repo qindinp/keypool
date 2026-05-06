@@ -65,27 +65,64 @@ function canAutoInstallTailscale(tailscaleConfig = {}) {
 
 function installTailscale(log) {
   log('info', '检测到未安装 Tailscale，尝试自动安装...');
-  const script = [
-    'set -e',
-    'if command -v tailscale >/dev/null 2>&1; then exit 0; fi',
-    'if command -v curl >/dev/null 2>&1; then',
-    '  curl -fsSL https://tailscale.com/install.sh | sh',
-    'elif command -v wget >/dev/null 2>&1; then',
-    '  wget -qO- https://tailscale.com/install.sh | sh',
-    'else',
-    '  echo "Neither curl nor wget is available" >&2',
-    'exit 1',
-    'fi',
-  ].join('\n');
+
+  // 策略 1: 直接从 Tailscale 官方源安装（跳过全量 apt-get update，避免第三方镜像不可达导致失败）
+  const repoScript = `
+    set -e
+    . /etc/os-release 2>/dev/null || true
+    DISTRO=\${ID:-ubuntu}
+    CODENAME=\${VERSION_CODENAME:-noble}
+    ARCH=\$(dpkg --print-architecture 2>/dev/null || echo amd64)
+
+    mkdir -p /usr/share/keyrings
+    curl -fsSL "https://pkgs.tailscale.com/stable/\${DISTRO}/\${CODENAME}.noarmor.gpg" | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+    chmod 0644 /usr/share/keyrings/tailscale-archive-keyring.gpg
+
+    curl -fsSL "https://pkgs.tailscale.com/stable/\${DISTRO}/\${CODENAME}.tailscale-keyring.list" | tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+    chmod 0644 /etc/apt/sources.list.d/tailscale.list
+
+    # 只更新 Tailscale 源，忽略其他源的错误
+    apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/tailscale.list -o Dir::Etc::sourceparts=/dev/null 2>/dev/null || true
+
+    apt-get install -y tailscale
+  `.trim();
 
   try {
-    execFileSync('sh', ['-c', script], { encoding: 'utf-8', timeout: 180_000, stdio: 'pipe' });
+    execFileSync('sh', ['-c', repoScript], { encoding: 'utf-8', timeout: 180_000, stdio: 'pipe' });
+    log('info', '✅ Tailscale 自动安装完成 (apt)');
+    return true;
   } catch (e) {
-    log('error', `Tailscale 自动安装失败: ${e.stderr?.trim() || e.stdout?.trim() || e.message}`);
+    log('warn', `apt 安装失败: ${e.message}，尝试二进制安装...`);
+  }
+
+  // 策略 2: 直接下载二进制
+  const binScript = `
+    set -e
+    ARCH=\$(uname -m)
+    case "\$ARCH" in
+      x86_64|amd64) TARCH="amd64" ;;
+      aarch64|arm64) TARCH="arm64" ;;
+      armv7l|armhf) TARCH="arm" ;;
+      *) echo "Unsupported arch: \$ARCH" >&2; exit 1 ;;
+    esac
+    TMPDIR=\$(mktemp -d)
+    curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_latest_\${TARCH}.tgz" | tar xzf - -C "\$TMPDIR"
+    INSTALL_DIR=\$(ls -d "\$TMPDIR"/tailscale_* 2>/dev/null | head -1)
+    if [ -z "\$INSTALL_DIR" ]; then echo "No tailscale binary found" >&2; exit 1; fi
+    cp "\$INSTALL_DIR/tailscale" /usr/local/bin/tailscale
+    cp "\$INSTALL_DIR/tailscaled" /usr/local/bin/tailscaled
+    chmod +x /usr/local/bin/tailscale /usr/local/bin/tailscaled
+    rm -rf "\$TMPDIR"
+  `.trim();
+
+  try {
+    execFileSync('sh', ['-c', binScript], { encoding: 'utf-8', timeout: 180_000, stdio: 'pipe' });
+    log('info', '✅ Tailscale 自动安装完成 (binary)');
+    return true;
+  } catch (e) {
+    log('error', `Tailscale 自动安装失败: ${e.message}`);
     return false;
   }
-  log('info', '✅ Tailscale 自动安装完成');
-  return isTailscaleInstalled();
 }
 
 function isTailscaleLoggedIn() {
