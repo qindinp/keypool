@@ -8,7 +8,14 @@
   "keyRetryDelayMs": 60000,
   "maxRetries": 3,
   "tunnel": true,
-  "// tunnelService": "serveo.net 或 localhost.run（默认 localhost.run）",
+  "tunnelType": "tailscale",
+  "// tunnelType": "tailscale | ssh（默认 tailscale）",
+  "// tunnelService": "ssh 模式：serveo.net 或 localhost.run（默认 localhost.run）",
+  "tailscale": {
+    "// authKey": "tskey-auth-xxx（或通过环境变量 TAILSCALE_AUTHKEY）",
+    "hostname": "keypool",
+    "funnel": true
+  },
 
   "// keys": [
   "//   { \"id\": \"my-key-1\", \"key\": \"sk-...\" },

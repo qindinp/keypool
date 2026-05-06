@@ -40,7 +40,9 @@ const HEALTH_CHECK_INTERVAL = config.healthCheckIntervalMs || 5 * 60 * 1000;
 const KEY_RETRY_DELAY = config.keyRetryDelayMs || 60 * 1000;
 const AVAILABLE_MODELS = config.models || [];
 const TUNNEL_ENABLED = config.tunnel !== false;
+const TUNNEL_TYPE = config.tunnelType || 'tailscale';
 const TUNNEL_SERVICE = config.tunnelService || 'localhost.run';
+const TAILSCALE_CONFIG = config.tailscale || {};
 const MAX_RETRIES = config.maxRetries || 3;
 
 const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -240,7 +242,15 @@ server.listen(PORT, () => {
   log('info', `   GET /pool/stats for usage, GET /health for status`);
 
   if (TUNNEL_ENABLED) {
-    startTunnel(PORT, { service: TUNNEL_SERVICE, log });
+    startTunnel(PORT, {
+      tunnelType: TUNNEL_TYPE,
+      sshService: TUNNEL_SERVICE,
+      tailscaleConfig: TAILSCALE_CONFIG,
+      log,
+      onUrl: (url) => {
+        log('info', `🔗 隧道 URL: ${url}`);
+      },
+    });
   }
 });
 
