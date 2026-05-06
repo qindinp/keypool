@@ -3,7 +3,7 @@
  * 通过 tailscale serve + funnel 暴露本地端口到公网
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
 const HEALTH_RECHECK_INTERVAL_MS = 120_000;
@@ -74,13 +74,14 @@ function installTailscale(log) {
     '  wget -qO- https://tailscale.com/install.sh | sh',
     'else',
     '  echo "Neither curl nor wget is available" >&2',
-    '  exit 1',
+    'exit 1',
     'fi',
-  ].join('; ');
+  ].join('\n');
 
-  const result = run('sh', ['-lc', JSON.stringify(script)], { timeout: 180_000 });
-  if (!result.ok) {
-    log('error', `Tailscale 自动安装失败: ${result.stderr || result.stdout}`);
+  try {
+    execFileSync('sh', ['-c', script], { encoding: 'utf-8', timeout: 180_000, stdio: 'pipe' });
+  } catch (e) {
+    log('error', `Tailscale 自动安装失败: ${e.stderr?.trim() || e.stdout?.trim() || e.message}`);
     return false;
   }
   log('info', '✅ Tailscale 自动安装完成');
