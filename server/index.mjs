@@ -25,7 +25,7 @@ import {
   proxyAnthropicSync,
   proxyAnthropicStream,
 } from './anthropic-adapter.mjs';
-import { startTunnel, stopTunnel } from './tunnel.mjs';
+import { startTunnel, stopTunnel } from './tunnel/index.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(__dirname, '..', 'config.json');
