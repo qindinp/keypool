@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │              外部持久服务器 (Part 2)                       │
-│              controller.mjs — 永远在线                    │
+│              bin/manager.mjs — 永远在线                   │
 │                                                          │
 │  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌────────┐ │
 │  │ 监控状态  │→ │ 创建实例   │→ │ WS 部署   │→ │ Key 推送│ │
@@ -15,7 +15,7 @@
                            ▼
 ┌─────────────────────────────────────────────────────────┐
 │           AI Studio 限时实例 (Part 1)                     │
-│           server.mjs — 每小时轮换                         │
+│           server/index.mjs — 每小时轮换                    │
 │                                                          │
 │  ┌───────────┐  ┌─────────────┐  ┌──────────────────┐  │
 │  │ KeyPool   │  │ MIMO_API_KEY│  │ Key Exchange     │  │
@@ -47,7 +47,7 @@ rm -rf keypool
 git clone https://github.com/qindinp/keypool.git
 cp keypool/SOUL.md SOUL.md
 cd keypool
-nohup node server.mjs > /tmp/keypool.log 2>&1 &
+nohup node bin/server.mjs > /tmp/keypool.log 2>&1 &
 ```
 
 ### 验证
@@ -58,7 +58,7 @@ curl http://127.0.0.1:9200/health
 curl http://127.0.0.1:9200/pool/stats
 ```
 
-## Part 2: 外部持久服务器 (controller.mjs)
+## Part 2: 外部持久服务器 (Manager)
 
 ### 做什么
 
@@ -87,13 +87,13 @@ cd keypool
 echo "serviceToken=xxx; userId=xxx; xiaomichatbot_ph=xxx" > .cookie
 
 # 3. 验证 Cookie
-node controller.mjs --status
+npm run manager:status           # node bin/manager.mjs --status
 
 # 4. 单次测试
-node controller.mjs --once
+npm run manager:once             # node bin/manager.mjs --once
 
 # 5. 持续运行
-node controller.mjs
+npm run manager                  # node bin/manager.mjs
 
 # 或用 systemd
 bash controller-setup.sh
@@ -103,10 +103,10 @@ systemctl start keypool-controller
 ### 命令
 
 ```bash
-node controller.mjs              # 持续运行
-node controller.mjs --once       # 单次检查后退出
-node controller.mjs --status     # 查看当前状态
-node controller.mjs --deploy     # 强制重新部署
+npm run manager                  # 持续运行
+npm run manager:once             # 单次检查后退出
+npm run manager:status           # 查看当前状态
+npm run manager:deploy           # 强制重新部署
 ```
 
 ### 环境变量
@@ -194,10 +194,12 @@ node ws-client.mjs "cat /tmp/keypool.log"
 
 | 文件 | 位置 | 说明 |
 |------|------|------|
-| `server.mjs` | Part 1 实例内 | KeyPool 代理 |
-| `controller.mjs` | Part 2 外部 | 自动续期控制器 |
-| `controller-setup.sh` | Part 2 外部 | 一键安装脚本 |
-| `ws-client.mjs` | 任意 | WebSocket 调试客户端 |
+| `bin/server.mjs` | Part 1 实例内 | KeyPool 代理入口 |
+| `bin/manager.mjs` | Part 2 外部 | 自动续期管理器入口 |
+| `bin/app.mjs` | Part 2 外部 | Manager + Relay 联合启动 |
+| `bin/relay.mjs` | Part 2 外部 | Relay 中继服务入口 |
+| `bin/ws-client.mjs` | 任意 | WebSocket 调试客户端 |
+| `controller-setup.sh` | Part 2 外部 | systemd 安装脚本 |
 | `.cookie` | Part 2 外部 | 登录凭证 |
 | `.controller-state.json` | Part 2 外部 | 运行状态 |
 | `.controller.log` | Part 2 外部 | 运行日志 |

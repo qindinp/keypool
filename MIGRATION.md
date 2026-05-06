@@ -1,5 +1,24 @@
 # 迁移指南 — v0.4.0 重构
 
+> **Phase 1-5 更新 (2026-05-06)**: 项目已完成模块化拆分，详见下方"模块化拆分"章节。
+
+## 模块化拆分 (Phase 1-5)
+
+原根目录散落的单文件已拆分为三层架构：
+
+| 新路径 | 职责 |
+|--------|------|
+| `src/shared/` | 公共工具 (http, ws, cookie, logger, state-store, utils) |
+| `src/manager/` | 管理器 (accounts, account-worker, deploy-client, registry, mimo-api) |
+| `src/relay/` | 中继层 (server, admin-api, control-api, proxy, router) |
+| `bin/` | 入口点 (server, manager, relay, app, key-exchange, ws-client) |
+
+根目录 `app.mjs`、`manager.mjs`、`server.mjs` 保留为向后兼容入口。
+
+已删除：`controller.mjs`、`controller-deprecated.mjs`、`auto-renew.mjs`、`renew.mjs`
+
+---
+
 ## server.mjs 拆分
 
 原 `server.mjs` (35KB 单文件) 已拆分为 `server/` 目录下的独立模块：

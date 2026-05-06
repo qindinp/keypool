@@ -28,7 +28,7 @@
 
 ```bash
 # 由 Part 2 自动部署，或手动:
-node server.mjs
+npm start                # node bin/server.mjs
 # KeyPool 运行在 http://127.0.0.1:9200
 ```
 
@@ -42,10 +42,17 @@ cd keypool
 # 2. 设置 Cookie (从浏览器 F12 获取)
 echo "serviceToken=xxx; userId=xxx" > .cookie
 
-# 3. 启动控制器
-node manager.mjs
+# 3. 启动管理器
+npm run manager          # node bin/manager.mjs
 
 # 它会自动: 监控实例 → 到期前创建新实例 → 部署 KeyPool → 获取新 Key
+```
+
+### 一键启动 (Manager + Relay)
+
+```bash
+npm run app              # node bin/app.mjs
+# 管理界面: http://127.0.0.1:9300/admin
 ```
 
 ### 使用 KeyPool
@@ -194,22 +201,57 @@ curl http://127.0.0.1:9200/health
 
 ```
 keypool/
-├── server.mjs              # 入口（向后兼容，转发到 server/index.mjs）
-├── server/                 # 核心代理模块
-│   ├── index.mjs           #   主入口 & 路由
-│   ├── config.mjs          #   配置加载 & OpenClaw 检测
-│   ├── key-pool.mjs        #   KeyPool 类（轮转、健康、恢复）
-│   ├── proxy.mjs           #   HTTP 代理（有限重试 + 超时 + body 限制）
-│   ├── anthropic-adapter.mjs # Anthropic ↔ OpenAI 转换（含 tool_use）
-│   └── tunnel.mjs          #   SSH 隧道管理
-├── app.mjs                 # 用户入口（启动 manager + relay）
-├── manager.mjs             # 多账号管理 + registry 同步
-├── controller/             # 控制器模块（accounts, deploy, registry 等）
-├── relay/                  # 中继层（proxy, router, admin UI）
-├── key-exchange.mjs        # Key 交换服务器
-├── ws-client.mjs           # MiMo WebSocket 客户端
-├── config.example.json     # 配置示例
-└── accounts.example.json   # 多账号配置示例
+├── bin/                        # 入口点（thin wrappers）
+│   ├── server.mjs              #   → server/index.mjs (KeyPool 代理)
+│   ├── manager.mjs             #   → src/manager/index.mjs (多账号管理)
+│   ├── relay.mjs               #   → src/relay/server.mjs (中继服务)
+│   ├── app.mjs                 #   Manager + Relay 联合启动器
+│   ├── key-exchange.mjs        #   Key 交换服务器
+│   └── ws-client.mjs           #   MiMo WebSocket 客户端
+├── src/                        # 核心业务模块（重构后）
+│   ├── shared/                 #   公共工具
+│   │   ├── http.mjs            #     HTTP 请求 & 健康检查
+│   │   ├── ws.mjs              #     WebSocket 帧解析
+│   │   ├── cookie.mjs          #     Cookie 管理
+│   │   ├── logger.mjs          #     日志工具
+│   │   ├── state-store.mjs     #     状态持久化
+│   │   └── utils.mjs           #     通用工具函数
+│   ├── manager/                #   管理器模块
+│   │   ├── index.mjs           #     主入口 & 调度循环
+│   │   ├── account-worker.mjs  #     单账号生命周期管理
+│   │   ├── accounts.mjs        #     多账号配置加载
+│   │   ├── deploy-client.mjs   #     WebSocket 部署客户端
+│   │   ├── registry.mjs        #     实例注册表
+│   │   ├── mimo-api.mjs        #     MiMo API 调用
+│   │   └── config.mjs          #     管理器配置
+│   └── relay/                  #   中继层
+│       ├── server.mjs          #     HTTP 服务器 & 路由分发
+│       ├── admin-api.mjs       #     Admin 管理 API
+│       ├── control-api.mjs     #     Control 控制 API
+│       ├── proxy.mjs           #     上游代理转发
+│       ├── router.mjs          #     路由选择策略
+│       └── utils.mjs           #     中继工具函数
+├── server/                     # KeyPool 代理模块
+│   ├── index.mjs               #   主入口 & 路由
+│   ├── config.mjs              #   配置加载 & OpenClaw 检测
+│   ├── key-pool.mjs            #   KeyPool 类（轮转、健康、恢复）
+│   ├── proxy.mjs               #   HTTP 代理（有限重试 + 超时 + body 限制）
+│   ├── anthropic-adapter.mjs   #   Anthropic ↔ OpenAI 转换（含 tool_use）
+│   └── tunnel/                 #   隧道管理
+│       ├── index.mjs           #     隧道入口 & 类型选择
+│       ├── ssh.mjs             #     SSH 隧道 (localhost.run)
+│       └── tailscale.mjs       #     Tailscale Funnel
+├── scripts/                    # 工具脚本
+│   ├── app-bg.mjs              #   后台运行管理
+│   ├── test-relay.mjs          #   Relay 测试
+│   └── ws-probe.mjs            #   WebSocket 探测
+├── app.mjs                     # 向后兼容 → bin/app.mjs
+├── manager.mjs                 # 向后兼容 → src/manager/index.mjs
+├── server.mjs                  # 向后兼容 → server/index.mjs
+├── key-exchange.mjs            # 独立 Key 交换服务
+├── ws-client.mjs               # 独立 WebSocket 客户端
+├── config.example.json         # 配置示例
+└── accounts.example.json       # 多账号配置示例
 ```
 
 ## 迁移指南

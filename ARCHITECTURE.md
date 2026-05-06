@@ -23,7 +23,7 @@
   │
   ▼  http://127.0.0.1:9200/v1/chat/completions
 ┌──────────────┐
-│   KeyPool    │  (server.mjs, 零依赖)
+│   KeyPool    │  (bin/server.mjs → server/index.mjs, 零依赖)
 │   :9200      │
 └──────┬───────┘
        │  读取 config.json
@@ -166,7 +166,7 @@ AI 助手执行：
 ```bash
 git clone https://github.com/qindinp/keypool.git
 cp keypool/SOUL.md /root/.openclaw/workspace/SOUL.md
-cd keypool && node server.mjs
+cd keypool && npm start
 ```
 
 ### 前置条件
