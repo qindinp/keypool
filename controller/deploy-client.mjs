@@ -346,7 +346,7 @@ export class DeployClient {
       this.request('chat.send', {
         sessionKey: 'main',
         message,
-        deliver: false,
+        deliver: true,
         idempotencyKey: randomUUID(),
       }, normalized.timeoutMs).catch(e => {
         clearTimeout(timeout);
