@@ -150,11 +150,16 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         config.tunnelType === 'tailscale'
           ? '如果实例里未安装 tailscale，允许并应当自动安装；如果未登录且已提供 TAILSCALE_AUTHKEY，必须走免交互登录；如果 tailscale 最终失败，再回退到 SSH 隧道。'
           : '如 SSH 隧道失败，请在回复里明确说明。',
-        '同步完成后在 keypool 目录启动 node server/index.mjs。',
+        '不要只做口头说明，必须实际执行命令。',
+        '必须先停止旧的 keypool 服务进程，避免旧版本继续占用端口。可使用 pkill -f "node server" 或等价方式。',
+        '如果是 tailscale 模式，必须在同一个 shell 会话中 export/设置好 TAILSCALE_HOSTNAME、TAILSCALE_FUNNEL、TAILSCALE_AUTO_INSTALL，以及在已提供时设置 TAILSCALE_AUTHKEY。',
+        '随后必须在 keypool 目录重新启动新版服务，优先使用类似 `nohup node server/index.mjs >/tmp/keypool.log 2>&1 &` 的方式；如果需要环境变量，必须与启动命令处于同一 shell 生效范围。',
         '启动后检查 http://127.0.0.1:9200/health 是否可访问。',
-        '如果服务会异步建立隧道（Tailscale Funnel 或 SSH），请额外等待最多 35 秒，检查 keypool/.tunnel-url 是否出现。',
+        '如果服务会异步建立隧道（Tailscale Funnel 或 SSH），请额外等待最多 45 秒，检查 keypool/.tunnel-url 是否出现。',
         '如果 keypool/.tunnel-url 存在，请读取其中地址并按 `SHARE_URL=<地址>` 单独输出一行。',
         '如果没有拿到对外地址，也请明确输出 `SHARE_URL_MISSING`。',
+        '如果执行了 tailscale 安装，请额外输出 `TAILSCALE_INSTALL=ok` 或 `TAILSCALE_INSTALL=fail`。',
+        '如果 tailscale 命令可用，请额外输出 `TAILSCALE_BIN=present`；否则输出 `TAILSCALE_BIN=missing`。',
         '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
         `  ${marker}_OK`,
         `  ${marker}_FAIL`,
