@@ -71,6 +71,25 @@ function handleRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
 
+  function rewriteRequestModelIfNeeded(bodyText) {
+    if (!bodyText || AVAILABLE_MODELS.length === 0) return bodyText;
+    try {
+      const parsed = JSON.parse(bodyText);
+      if (!parsed || typeof parsed !== 'object') return bodyText;
+      const currentModel = typeof parsed.model === 'string' ? parsed.model.trim() : '';
+      if (!currentModel) return bodyText;
+      const known = new Set(AVAILABLE_MODELS.map((m) => String(m.id || '').trim()).filter(Boolean));
+      if (known.has(currentModel)) return bodyText;
+      const fallbackModel = String(AVAILABLE_MODELS[0]?.id || '').trim();
+      if (!fallbackModel) return bodyText;
+      parsed.model = fallbackModel;
+      log('warn', `模型 ${currentModel} 不在可用列表中，自动改写为 ${fallbackModel}`);
+      return JSON.stringify(parsed);
+    } catch {
+      return bodyText;
+    }
+  }
+
   // CORS
   res.setHeader('access-control-allow-origin', '*');
   res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
@@ -169,6 +188,7 @@ function handleRequest(req, res) {
   // ── Proxy to upstream (OpenAI 兼容路径) ──
   if (path.startsWith('/v1/')) {
     readBody(req).then((body) => {
+      const normalizedBody = rewriteRequestModelIfNeeded(body);
       const keyEntry = pool.pick();
       if (!keyEntry) {
         res.writeHead(503, { 'content-type': 'application/json' });
@@ -178,7 +198,7 @@ function handleRequest(req, res) {
       }
       log('debug', `→ ${req.method} ${path} [${keyEntry.id}]`);
       proxyRequest({
-        keyEntry, pool, req, res, body,
+        keyEntry, pool, req, res, body: normalizedBody,
         retryCount: 0,
         maxRetries: pool.keys.length - 1, // 最多重试到下一个 key
         log,

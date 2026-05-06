@@ -152,6 +152,10 @@ export function createControlApi({ rootDir, appBgScriptPath }) {
       return sendJson(res, 200, await restartManagerProcess());
     }
 
+    if (url.pathname === '/api/control/retry' && req.method === 'POST') {
+      return sendJson(res, 200, await restartManagerProcess());
+    }
+
     if (url.pathname === '/api/control/app/status' && req.method === 'GET') {
       try {
         return sendJson(res, 200, appStatus());
@@ -186,7 +190,7 @@ export function createControlApi({ rootDir, appBgScriptPath }) {
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的控制路径: /api/control/status /api/control/start /api/control/stop /api/control/restart /api/control/app/status /api/control/app/start /api/control/app/stop /api/control/all/start',
+      message: '支持的控制路径: /api/control/status /api/control/start /api/control/stop /api/control/restart /api/control/retry /api/control/app/status /api/control/app/start /api/control/app/stop /api/control/all/start',
     });
   }
 
