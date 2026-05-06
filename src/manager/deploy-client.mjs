@@ -257,7 +257,7 @@ export class DeployClient {
       this._chatReject = (err) => { clearTimeout(timeout); reject(err); };
 
       this.request('chat.send', {
-        sessionKey: deploySession,
+        sessionKey: 'main',
         message,
         deliver: false,
         idempotencyKey: randomUUID(),
