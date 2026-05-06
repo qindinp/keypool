@@ -10,6 +10,41 @@ const PID_FILE = resolve(RUNTIME_DIR, 'app-bg.json');
 const LOG_FILE = resolve(RUNTIME_DIR, 'app-bg.log');
 const ERR_FILE = resolve(RUNTIME_DIR, 'app-bg.err.log');
 const ENTRY = resolve(ROOT, 'app.mjs');
+const ENV_KEYS_TO_HYDRATE = [
+  'TAILSCALE_AUTHKEY',
+  'TAILSCALE_HOSTNAME',
+  'TAILSCALE_FUNNEL',
+  'TAILSCALE_AUTO_INSTALL',
+  'TUNNEL_TYPE',
+  'TUNNEL_SERVICE',
+];
+
+function readWindowsUserEnvVar(name) {
+  if (process.platform !== 'win32' || !name) return '';
+  try {
+    const result = spawnSync('reg', ['query', 'HKCU\\Environment', '/v', name], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    if (result.status !== 0) return '';
+    const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+    const match = output.match(new RegExp(`\\b${name}\\b\\s+REG_\\w+\\s+(.+)$`, 'mi'));
+    return match ? match[1].trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function buildChildEnv() {
+  const env = { ...process.env };
+  for (const key of ENV_KEYS_TO_HYDRATE) {
+    if (typeof env[key] === 'string' && env[key].length > 0) continue;
+    const persisted = readWindowsUserEnvVar(key);
+    if (persisted) env[key] = persisted;
+  }
+  return env;
+}
 
 function ensureRuntimeDir() {
   mkdirSync(RUNTIME_DIR, { recursive: true });
@@ -78,7 +113,7 @@ function start() {
     detached: true,
     stdio: ['ignore', outFd, errFd],
     windowsHide: true,
-    env: { ...process.env },
+    env: buildChildEnv(),
   });
 
   child.unref();
