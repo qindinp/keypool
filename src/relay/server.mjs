@@ -94,27 +94,6 @@ function isStreamingRequest(path, body) {
   }
 }
 
-function rewriteRequestModelIfNeeded(body) {
-  if (!body) return body;
-  try {
-    const parsed = JSON.parse(body);
-    if (!parsed || typeof parsed !== 'object') return body;
-    const currentModel = typeof parsed.model === 'string' ? parsed.model.trim() : '';
-    if (!currentModel) return body;
-
-    const data = registry.load();
-    const upstreams = Array.isArray(data?.upstreams) ? data.upstreams : [];
-    const primary = upstreams.find((u) => u?.healthy) || upstreams[0];
-    const availableModel = 'xiaomi/mimo-v2.5-pro';
-    if (!primary || !availableModel || currentModel === availableModel) return body;
-
-    parsed.model = availableModel;
-    return JSON.stringify(parsed);
-  } catch {
-    return body;
-  }
-}
-
 function isClientAbortError(error) {
   const message = error?.message || '';
   return message.includes('客户端已断开') || message.includes('aborted');
@@ -268,7 +247,7 @@ async function handleProxy(req, res, path) {
     });
   }
 
-  const body = req.method === 'GET' ? null : rewriteRequestModelIfNeeded(await readBody(req));
+  const body = req.method === 'GET' ? null : await readBody(req);
   if (isStreamingRequest(path, body)) {
     return handleStreamProxy(req, res, path, body);
   }

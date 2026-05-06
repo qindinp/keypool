@@ -848,27 +848,7 @@
     $('refreshMs').addEventListener('change', () => { applyAutoRefresh(); refreshAll(); });
     $('copyAccessBtn').addEventListener('click', () => copyText($('accessUrl').textContent, '已复制接入地址'));
     $('copyOpenClawBtn').addEventListener('click', () => {
-      const preferredModel = state.upstreams.size > 0
-        ? 'xiaomi/mimo-v2.5-pro'
-        : 'xiaomi/mimo-v2.5-pro';
-      const config = JSON.stringify({
-        models: {
-          default: preferredModel,
-          providers: {
-            openai: {
-              apiKey: 'sk-keypool-local',
-              baseUrl: $('accessUrl').textContent,
-              models: [
-                {
-                  id: preferredModel,
-                  name: preferredModel,
-                  reasoning: true
-                }
-              ]
-            }
-          }
-        }
-      }, null, 2);
+      const config = JSON.stringify({ models: { providers: { openai: { baseUrl: $('accessUrl').textContent } } } }, null, 2);
       copyText(config, '已复制 OpenClaw 配置片段');
     });
     $('copyLogsBtn').addEventListener('click', () => copyText(state.lastLogsText || '暂无日志', '已复制日志'));
