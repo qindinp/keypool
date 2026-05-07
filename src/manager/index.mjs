@@ -91,7 +91,29 @@ async function syncRegistryForRuntime(rt, registry) {
   const shareUrl = state.currentShareUrl || null;
   const tailnetUrl = state.currentTailnetUrl || null;
   const localUrl = state.currentLocalUrl || 'http://127.0.0.1:9200';
-  const baseUrl = tailnetUrl || shareUrl;
+
+  // 选择最佳 baseUrl：先试 tailnetUrl，不可达则降级到 shareUrl
+  let baseUrl = null;
+  if (tailnetUrl) {
+    const tailnetHealth = await computeEndpointHealth(tailnetUrl);
+    if (tailnetHealth.healthy) {
+      baseUrl = tailnetUrl;
+    } else if (shareUrl) {
+      // tailnet 不可达，降级到 shareUrl
+      const shareHealth = await computeEndpointHealth(shareUrl);
+      if (shareHealth.healthy) {
+        baseUrl = shareUrl;
+      } else {
+        // 两个都不健康，保留 tailnet 作为 baseUrl（至少记录地址）
+        baseUrl = tailnetUrl;
+      }
+    } else {
+      baseUrl = tailnetUrl;
+    }
+  } else {
+    baseUrl = shareUrl;
+  }
+
   const endpointHealth = await computeEndpointHealth(baseUrl);
   const healthy = instanceStatus === 'AVAILABLE' && endpointHealth.healthy;
 

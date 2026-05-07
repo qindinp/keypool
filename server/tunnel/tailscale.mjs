@@ -284,11 +284,12 @@ export async function startTailscaleFunnel(port, opts, state) {
   console.log('╚══════════════════════════════════════════════════════════╝');
   console.log('');
 
-  // 8. 写入 URL 文件
+  // 8. 写入 URL 文件（带时间戳）
   state.setCurrentUrl(cleanUrl);
   state.resetHealthFailures();
   try {
-    writeFileSync(state.tunnelUrlPath, cleanUrl + '\n', 'utf-8');
+    const ts = new Date().toISOString();
+    writeFileSync(state.tunnelUrlPath, `${cleanUrl}\n#ts=${ts}\n`, 'utf-8');
   } catch {}
 
   // 9. 定期健康检查
@@ -302,10 +303,13 @@ export async function startTailscaleFunnel(port, opts, state) {
         const localHealth = await probeLocalHealth(port, 10_000);
         state.resetHealthFailures();
         if (localHealth.ok) {
-          log('warn', `隧道健康检查连续 ${CONSECUTIVE_FAILURES_THRESHOLD} 次失败，但本地服务健康；跳过 Funnel 重建，仅等待后续复检`);
+          log('warn', `隧道健康检查连续 ${CONSECUTIVE_FAILURES_THRESHOLD} 次失败，但本地服务健康；标记 URL 为 stale 并等待后续复检`);
+          state.markTunnelUrlStale?.();
           return;
         }
         log('warn', `隧道健康检查连续 ${CONSECUTIVE_FAILURES_THRESHOLD} 次失败，且本地服务异常，尝试重建...`);
+        // 标记旧 URL 为 stale（而非删除），重建后会写入新 URL
+        state.markTunnelUrlStale?.();
         stopTailscaleFunnel(port);
         stopTailscaleServe(port);
         await sleep(2_000);

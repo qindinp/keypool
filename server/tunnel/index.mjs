@@ -5,7 +5,7 @@
  * SSH 隧道模式（回退）  → ./ssh.mjs
  */
 
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,7 +43,27 @@ const state = {
   clearTunnelUrlFile: () => {
     tunnelCurrentUrl = null;
     try {
-      if (existsSync(TUNNEL_URL_PATH)) unlinkSync(TUNNEL_URL_PATH);
+      if (existsSync(TUNNEL_URL_PATH)) {
+        // 不直接删除，改为标记为 stale（写入前缀）
+        // 这样 Manager 在读取时知道这是旧地址，但不会因为文件不存在而误判
+        const content = readFileSync(TUNNEL_URL_PATH, 'utf-8').trim();
+        if (content) {
+          writeFileSync(TUNNEL_URL_PATH, '#stale\n' + content + '\n', 'utf-8');
+        } else {
+          unlinkSync(TUNNEL_URL_PATH);
+        }
+      }
+    } catch {}
+  },
+
+  markTunnelUrlStale: () => {
+    try {
+      if (existsSync(TUNNEL_URL_PATH)) {
+        const content = readFileSync(TUNNEL_URL_PATH, 'utf-8').trim();
+        if (content && !content.startsWith('#stale')) {
+          writeFileSync(TUNNEL_URL_PATH, '#stale\n' + content + '\n', 'utf-8');
+        }
+      }
     } catch {}
   },
 };
@@ -92,7 +112,8 @@ export function startTunnel(port, opts = {}) {
 export function stopTunnel() {
   restartPlanned = true;
   clearTimers();
-  state.clearTunnelUrlFile();
+  // 标记为 stale 而非删除，保留旧地址供 Manager 做降级判断
+  state.markTunnelUrlStale();
   stopSSHtunnel();
   // Tailscale serve/funnel 是后台守护进程，不需要 kill
   // 如果需要清理：tailscale serve --bg --remove <port>

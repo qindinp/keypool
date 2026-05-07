@@ -117,9 +117,9 @@ export function startSSHtunnel(port, opts, state) {
   let urlFound = false;
   let discoveryTimer = setTimeout(() => {
     if (!urlFound) {
-      log('warn', 'SSH 隧道长时间未产出公网地址，3 秒后重建...');
+      log('warn', 'SSH 隧道长时间未产出公网地址，2 秒后重建...');
       stopSSHtunnel();
-      setTimeout(() => startSSHtunnel(port, opts, state), 3_000);
+      setTimeout(() => startSSHtunnel(port, opts, state), 2_000);
     }
   }, URL_DISCOVERY_TIMEOUT_MS);
 
@@ -132,9 +132,9 @@ export function startSSHtunnel(port, opts, state) {
       (async () => {
         const healthy = await waitForHealthyPublicUrl(publicUrl, log, HEALTH_VERIFY_ATTEMPTS, HEALTH_VERIFY_DELAY_MS);
         if (!healthy) {
-          log('warn', `SSH 隧道返回了失效地址 ${publicUrl}，3 秒后重建...`);
+          log('warn', `SSH 隧道返回了失效地址 ${publicUrl}，2 秒后重建...`);
           stopSSHtunnel();
-          setTimeout(() => startSSHtunnel(port, opts, state), 3_000);
+          setTimeout(() => startSSHtunnel(port, opts, state), 2_000);
           return;
         }
         console.log('');
@@ -146,7 +146,10 @@ export function startSSHtunnel(port, opts, state) {
         console.log('');
         const cleanUrl = publicUrl.replace(/\/+$/, '');
         state.setCurrentUrl(cleanUrl);
-        try { writeFileSync(state.tunnelUrlPath, cleanUrl + '\n', 'utf-8'); } catch {}
+        try {
+          const ts = new Date().toISOString();
+          writeFileSync(state.tunnelUrlPath, `${cleanUrl}\n#ts=${ts}\n`, 'utf-8');
+        } catch {}
         onUrl(cleanUrl);
       })().catch((err) => {
         log('warn', `SSH 隧道验证异常: ${err.message}`);
@@ -162,10 +165,11 @@ export function startSSHtunnel(port, opts, state) {
   tunnelProcess.on('close', (code) => {
     tunnelProcess = null;
     if (state.getRestartPlanned()) return;
-    state.clearTunnelUrlFile();
+    // 标记为 stale 而非删除，保留旧地址供 Manager 做降级判断
+    state.markTunnelUrlStale?.() || state.clearTunnelUrlFile();
     if (code !== 0 && code !== null) {
-      log('warn', `SSH 隧道断开 (code ${code})，30 秒后重连...`);
-      setTimeout(() => startSSHtunnel(port, opts, state), 30_000);
+      log('warn', `SSH 隧道断开 (code ${code})，10 秒后重连...`);
+      setTimeout(() => startSSHtunnel(port, opts, state), 10_000);
     }
   });
 }

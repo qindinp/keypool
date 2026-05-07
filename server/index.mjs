@@ -194,9 +194,24 @@ function handleRequest(req, res) {
   // ── Catch-all: 使用信息 ──
   res.writeHead(200, { 'content-type': 'application/json' });
   let tunnelUrl = null;
+  let tunnelUrlStale = false;
   try {
     const urlFile = resolve(__dirname, '..', '.tunnel-url');
-    if (existsSync(urlFile)) tunnelUrl = readFileSync(urlFile, 'utf-8').trim();
+    if (existsSync(urlFile)) {
+      const raw = readFileSync(urlFile, 'utf-8').trim();
+      if (raw.startsWith('#stale')) {
+        // 读取 #stale 后面的 URL
+        const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+        const urlLine = lines.find(l => !l.startsWith('#'));
+        if (urlLine) {
+          tunnelUrl = urlLine;
+          tunnelUrlStale = true;
+        }
+      } else {
+        const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+        tunnelUrl = lines[0] || null;
+      }
+    }
   } catch {}
   res.end(
     JSON.stringify(
@@ -216,7 +231,7 @@ function handleRequest(req, res) {
         keys: pool.keys.length,
         models: AVAILABLE_MODELS.length,
         maxRetries: MAX_RETRIES,
-        tunnel: tunnelUrl || 'disabled',
+        tunnel: tunnelUrl ? (tunnelUrlStale ? `${tunnelUrl} (stale)` : tunnelUrl) : 'disabled',
         usage: `Set OPENAI_BASE_URL to http://127.0.0.1:${PORT}/v1${tunnelUrl ? ` or ${tunnelUrl}/v1` : ''}`,
       },
       null,

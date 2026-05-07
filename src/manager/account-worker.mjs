@@ -10,20 +10,37 @@ const SHARE_URL_PROBE_DELAY_MS = 4000;
 function parseDeployResult(reply) {
   const text = String(reply || '');
   const normalized = text.replace(/\r/g, '');
-  const shareUrlLineMatch = normalized.match(/(?:^|\n)SHARE_URL\s*[=:]\s*(https?:\/\/[^\s`"'<>]+)/i);
-  const labeledShareUrl = shareUrlLineMatch ? shareUrlLineMatch[1] : null;
-  const tailnetUrlLineMatch = normalized.match(/(?:^|\n)TAILNET_URL\s*[=:]\s*(https?:\/\/[^\s`"'<>]+)/i);
-  const labeledTailnetUrl = tailnetUrlLineMatch ? tailnetUrlLineMatch[1] : null;
-  const candidateUrls = Array.from(normalized.matchAll(/https?:\/\/[^\s`"'<>]+/g)).map(m => m[0]);
-  const shareUrl = [labeledShareUrl, ...candidateUrls]
-    .map(url => normalizeShareUrl(url))
-    .filter(Boolean)
-    .sort((a, b) => getShareUrlPriority(a) - getShareUrlPriority(b))[0] || null;
-  const tailnetUrl = normalizeTailnetUrl(labeledTailnetUrl);
+
+  // 第一优先：精确匹配 SHARE_URL= 标记行
+  const shareUrlLineMatch = normalized.match(/(?:^|\n)\s*SHARE_URL\s*[=:]\s*(https?:\/\/[^\s`"'<>]+)/i);
+  const labeledShareUrl = shareUrlLineMatch ? normalizeShareUrl(shareUrlLineMatch[1]) : null;
+
+  // 第二优先：精确匹配 TAILNET_URL= 标记行
+  const tailnetUrlLineMatch = normalized.match(/(?:^|\n)\s*TAILNET_URL\s*[=:]\s*(https?:\/\/[^\s`"'<>]+)/i);
+  const labeledTailnetUrl = normalizeTailnetUrl(tailnetUrlLineMatch ? tailnetUrlLineMatch[1] : null);
+
+  // 第三优先：从代码块或标记行附近提取 URL（比全量搜索更精确）
+  // 只在 SHARE_URL 标记不存在时才用通用提取作为兜底
+  let shareUrl = labeledShareUrl;
+  if (!shareUrl) {
+    // 通用提取：过滤已知 tunnel 域名，排除明显无关 URL
+    const candidateUrls = Array.from(normalized.matchAll(/https?:\/\/[^\s`"'<>]+/g))
+      .map(m => m[0])
+      .filter(url => !url.includes('github.com'))
+      .filter(url => !url.includes('xiaomimimo.com'))
+      .filter(url => !url.includes('twitter.com'))
+      .filter(url => !url.includes('/docs/'))
+      .map(url => normalizeShareUrl(url))
+      .filter(Boolean);
+    shareUrl = candidateUrls.sort((a, b) => getShareUrlPriority(a) - getShareUrlPriority(b))[0] || null;
+  }
+
+  const tailnetUrl = labeledTailnetUrl;
   const localUrlMatch = normalized.match(/http:\/\/127\.0\.0\.1:9200(?:\/health)?/);
   const healthOk = /健康检查通过|LOCAL_OK/.test(normalized);
   const started = /服务已成功启动|SERVICE_RUNNING|SERVICE_RESTARTED/.test(normalized);
   const shareUrlMissing = /SHARE_URL_MISSING|未获取到.*分享地址|tunnel.*未产出/i.test(normalized);
+  const shareUrlStale = /SHARE_URL_STALE\s*=\s*true/i.test(normalized);
 
   return {
     shareUrl,
@@ -32,6 +49,7 @@ function parseDeployResult(reply) {
     healthOk,
     started,
     shareUrlMissing,
+    shareUrlStale,
   };
 }
 
@@ -177,8 +195,10 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '如果是 tailscale 模式，必须在同一个 shell 会话中 export/设置好 TAILSCALE_HOSTNAME、TAILSCALE_FUNNEL、TAILSCALE_AUTO_INSTALL，以及在已提供时设置 TAILSCALE_AUTHKEY。',
         '随后必须在 keypool 目录重新启动新版服务，优先使用类似 `nohup node server/index.mjs >/tmp/keypool.log 2>&1 &` 的方式；如果需要环境变量，必须与启动命令处于同一 shell 生效范围。',
         '启动后检查 http://127.0.0.1:9200/health 是否可访问。',
-        '如果服务会异步建立隧道（Tailscale Funnel 或 SSH），请额外等待最多 45 秒，检查 keypool/.tunnel-url 是否出现。',
-        '如果 keypool/.tunnel-url 存在，请读取其中地址并按 `SHARE_URL=<地址>` 单独输出一行。',
+        '如果服务会异步建立隧道（Tailscale Funnel 或 SSH），请用轮询方式检查 keypool/.tunnel-url：每 5 秒读取一次，最多轮询 60 秒。',
+        '读取 keypool/.tunnel-url 时，如果文件第一行以 #stale 开头，说明这是旧地址标记，请继续等待下一次轮询，直到出现非 #stale 开头的地址或轮询超时。',
+        '如果最终拿到有效的非 stale 地址，请按 `SHARE_URL=<地址>` 单独输出一行。',
+        '如果轮询超时仍未拿到新地址，但文件中有 #stale 行，可以输出 `SHARE_URL=<stale地址>` 并额外输出 `SHARE_URL_STALE=true`。',
         '如果没有拿到对外地址，也请明确输出 `SHARE_URL_MISSING`。',
         '如果 tailscale 命令可用，请读取 `tailscale status --json` 中当前节点的 DNSName，并按 `TAILNET_URL=https://<dnsname>` 单独输出一行；如果拿不到则输出 `TAILNET_URL_MISSING`。',
         '如果执行了 tailscale 安装，请额外输出 `TAILSCALE_INSTALL=ok` 或 `TAILSCALE_INSTALL=fail`。',
@@ -285,7 +305,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '如果原地重启成功，请回复 SERVICE_RESTARTED。',
         '如果服务本来就在运行，也可以回复 SERVICE_RUNNING。',
         '请额外检查以下信息并一并返回：',
-        '1. keypool/.tunnel-url 是否存在；如果存在，读取内容并按 `SHARE_URL=<地址>` 单独输出一行。',
+        '1. keypool/.tunnel-url 是否存在；如果存在，读取内容。如果第一行以 #stale 开头，说明是旧地址，仍按 `SHARE_URL=<地址>` 输出但额外输出 `SHARE_URL_STALE=true`；如果非 stale，正常输出 `SHARE_URL=<地址>`。',
         '2. 如果不存在，请输出 `SHARE_URL_MISSING`。',
         '3. 输出 `TUNNEL_FILE=present` 或 `TUNNEL_FILE=missing`。',
         '4. 输出 `TAILSCALE_FUNNEL=running` 或 `TAILSCALE_FUNNEL=missing`，用于表示 Tailscale Funnel 是否正常工作。',
@@ -377,7 +397,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       const marker = `TUNNEL_${Date.now().toString(36)}`;
       const prompt = [
         '请只检查 tunnel 状态，不要重启服务，不要重新部署。',
-        '1. 检查 keypool/.tunnel-url 是否存在，读取内容并按 `SHARE_URL=<地址>` 输出。',
+        '1. 检查 keypool/.tunnel-url 是否存在，读取内容。如果第一行以 #stale 开头，说明是旧地址，仍按 `SHARE_URL=<地址>` 输出但额外输出 `SHARE_URL_STALE=true`；如果非 stale，正常输出。',
         '2. 如果不存在，输出 `SHARE_URL_MISSING`。',
         '3. 如果 tailscale 可用，输出 `TAILNET_URL=https://<dnsname>`。',
         '4. 检查 http://127.0.0.1:9200/health 是否正常，正常则输出 `LOCAL_OK`。',
@@ -495,6 +515,12 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     const previousTailnetUrl = state.currentTailnetUrl || null;
     let effectiveShareUrl = deployResult.shareUrl || null;
     const effectiveTailnetUrl = deployResult.tailnetUrl || previousTailnetUrl || null;
+    const shareUrlIsStale = deployResult.shareUrlStale || false;
+
+    if (effectiveShareUrl && shareUrlIsStale) {
+      log('warn', `拿到的分享地址是 stale（旧地址）: ${effectiveShareUrl}，tunnel 可能正在重建`);
+    }
+
     if (!effectiveShareUrl && previousShareUrl) {
       try {
         const previousHealth = await probeHealth({ baseUrl: previousShareUrl, timeoutMs: 15_000 });
@@ -515,6 +541,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     if (newKey) state.currentKey = newKey;
     state.currentShareUrl = effectiveShareUrl;
     state.currentTailnetUrl = effectiveTailnetUrl;
+    state.currentShareUrlStale = shareUrlIsStale;
     state.currentLocalUrl = deployResult.localUrl || 'http://127.0.0.1:9200';
     state.history = state.history || [];
     state.history.push({
