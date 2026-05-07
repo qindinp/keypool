@@ -15,7 +15,7 @@ import { createAccountWorker } from './account-worker.mjs';
 import { createRegistry } from './registry.mjs';
 import { sleep } from '../shared/utils.mjs';
 import { loadAccounts, getAccountsPath } from './accounts.mjs';
-import { probeHealth } from '../../relay/proxy.mjs';
+import { probeHealth } from '../shared/http.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = resolve(__dirname, '../../.manager');
