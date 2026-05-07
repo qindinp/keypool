@@ -176,6 +176,47 @@ function startFakeUpstream(port, behavior) {
       }));
     }
 
+    if (url.pathname === '/v1/responses') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      const parsed = JSON.parse(body || '{}');
+
+      if (parsed.stream) {
+        if (behavior.streamStatus && behavior.streamStatus >= 500) {
+          res.writeHead(behavior.streamStatus, { 'content-type': 'application/json; charset=utf-8' });
+          return res.end(JSON.stringify({ error: `${behavior.name}-responses-stream-failed` }));
+        }
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+          'x-accel-buffering': 'no',
+        });
+        res.write(`data: {"type":"response.output_text.delta","delta":"${behavior.name}"}\n\n`);
+        await sleep(30);
+        return res.end('data: [DONE]\n\n');
+      }
+
+      if (behavior.responsesStatus && behavior.responsesStatus >= 500) {
+        res.writeHead(behavior.responsesStatus, { 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: `${behavior.name}-responses-failed` }));
+      }
+
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({
+        id: `resp-${behavior.name}`,
+        object: 'response',
+        model: parsed.model || `${behavior.name}-response-model`,
+        output: [{
+          type: 'message',
+          id: `msg-${behavior.name}`,
+          role: 'assistant',
+          content: [{ type: 'output_text', text: `${behavior.name}-ok` }],
+        }],
+        upstream: behavior.name,
+      }));
+    }
+
 
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: 'not_found' }));
@@ -258,6 +299,15 @@ async function testJsonRoutes() {
   const chat = await chatRes.json();
   assert(chat?.choices?.[0]?.message?.content === 'primary-ok', 'unexpected chat payload');
 
+  const responsesRes = await fetch(`http://127.0.0.1:${relayPort}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'response-test', input: 'hi' }),
+  });
+  assert(responsesRes.status === 200, `expected /v1/responses 200, got ${responsesRes.status}`);
+  const responseBody = await responsesRes.json();
+  assert(responseBody?.output?.[0]?.content?.[0]?.text === 'primary-ok', 'unexpected responses payload');
+
   const messagesRes = await fetch(`http://127.0.0.1:${relayPort}/v1/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -283,6 +333,23 @@ async function testStreamRoute() {
   const text = await res.text();
   assert(text.includes('primary'), 'stream output should come from primary');
   assert(text.includes('data: [DONE]'), 'stream output missing done frame');
+}
+
+async function testResponsesStreamRoute() {
+  writeRegistry([
+    upstreamRecord({ accountId: 'primary', port: primaryPort, priority: 1 }),
+  ]);
+
+  const res = await fetch(`http://127.0.0.1:${relayPort}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'response-test', stream: true, input: 'hi' }),
+  });
+
+  assert(res.status === 200, `expected responses stream status 200, got ${res.status}`);
+  const text = await res.text();
+  assert(text.includes('primary'), 'responses stream output should come from primary');
+  assert(text.includes('data: [DONE]'), 'responses stream output missing done frame');
 }
 
 async function testMessagesStreamRoute() {
@@ -317,6 +384,16 @@ async function testFailoverToFallback() {
   assert(res.status === 200, `expected failover chat status 200, got ${res.status}`);
   const body = await res.json();
   assert(body?.upstream === 'fallback', 'chat should be served by fallback upstream');
+
+  const responsesRes = await fetch(`http://127.0.0.1:${relayPort}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'response-test', input: 'please failover' }),
+  });
+
+  assert(responsesRes.status === 200, `expected failover responses status 200, got ${responsesRes.status}`);
+  const responsesBody = await responsesRes.json();
+  assert(responsesBody?.upstream === 'fallback', 'responses should be served by fallback upstream');
 
   const msgRes = await fetch(`http://127.0.0.1:${relayPort}/v1/messages`, {
     method: 'POST',
@@ -401,7 +478,7 @@ async function main() {
       name: 'fallback',
       modelsStatus: 500,
       chatStatus: 200,
-      messagesStatus: 200,
+      responsesStatus: 200,
     });
     relay = startRelay();
     await waitFor(`http://127.0.0.1:${relayPort}/registry`);
@@ -411,6 +488,7 @@ async function main() {
     await testControlApi();
     await testJsonRoutes();
     await testStreamRoute();
+    await testResponsesStreamRoute();
     await testMessagesStreamRoute();
 
     await new Promise(resolve => primary.close(resolve));
@@ -420,6 +498,7 @@ async function main() {
       modelsStatus: 500,
       embeddingsStatus: 500,
       messagesStatus: 500,
+      responsesStatus: 500,
       streamStatus: 500,
     });
 

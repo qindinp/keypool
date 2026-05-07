@@ -84,7 +84,11 @@ function passthroughHeaders(headers) {
 }
 
 function isStreamingRequest(path, body) {
-  if (!(path.startsWith('/v1/chat/completions') || path.startsWith('/v1/messages'))) return false;
+  if (!(
+    path.startsWith('/v1/chat/completions') ||
+    path.startsWith('/v1/messages') ||
+    path.startsWith('/v1/responses')
+  )) return false;
   if (!body) return false;
   try {
     const parsed = JSON.parse(body);
@@ -322,14 +326,15 @@ const server = createServer(async (req, res) => {
       url.pathname === '/v1/models' ||
       url.pathname === '/v1/embeddings' ||
       url.pathname === '/v1/chat/completions' ||
-      url.pathname === '/v1/messages'
+      url.pathname === '/v1/messages' ||
+      url.pathname === '/v1/responses'
     ) {
       return handleProxy(req, res, url.pathname + url.search);
     }
 
     return sendJson(res, 404, {
       error: 'not_found',
-      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/restart /api/control/app/status /api/control/app/start /api/control/app/stop /api/control/all/start /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions /v1/messages',
+      message: '支持的路径: / /admin /api/control/status /api/control/start /api/control/stop /api/control/restart /api/control/app/status /api/control/app/start /api/control/app/stop /api/control/all/start /api/admin/overview /api/admin/logs /api/admin/accounts /api/admin/accounts/:id/deploy /api/admin/accounts/:id/recover /api/admin/accounts/:id/destroy /health /registry /v1/models /v1/embeddings /v1/chat/completions /v1/messages /v1/responses',
     });
   } catch (e) {
     return sendJson(res, 500, { error: 'relay_internal_error', message: e.message });
