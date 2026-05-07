@@ -250,9 +250,9 @@ export function createAdminApi(deps) {
     } else if (action === 'recover') {
       const recovered = await runtime.worker.recoverAvailableInstance();
       if (!recovered?.success) {
-        const detail = recovered?.shareUrl
-          ? `原地恢复拿到了 tunnel 地址 ${recovered.shareUrl}，但健康检查未通过`
-          : '原地恢复未拿到可确认的可用分享地址';
+        const detail = recovered?.tailnetIpUrl || recovered?.tailnetUrl
+          ? `原地恢复拿到了 Tailscale 内网入口 ${recovered.tailnetIpUrl || recovered.tailnetUrl}，但健康检查未通过`
+          : '原地恢复未拿到可确认的 Tailscale 内网入口';
         throw new Error(detail);
       }
 
@@ -285,7 +285,7 @@ export function createAdminApi(deps) {
         expireTime = status.expireTime || expireTime;
       } catch {}
 
-      const endpointBaseUrl = state.currentTailnetIpUrl || state.currentTailnetUrl || state.currentShareUrl;
+      const endpointBaseUrl = state.currentTailnetIpUrl || state.currentTailnetUrl || null;
       const endpointHealth = endpointBaseUrl
         ? await probeHealth({ baseUrl: endpointBaseUrl, timeoutMs: 15_000 })
         : { ok: false, statusCode: 0, error: 'missing baseUrl' };
@@ -331,6 +331,7 @@ export function createAdminApi(deps) {
     const now = Date.now();
     const healthyUpstreams = upstreams.filter((u) => u.healthy === true);
     const missingShareUrl = upstreams.filter((u) => !u.shareUrl).length;
+    const missingTailnetIpUrl = upstreams.filter((u) => !u.tailnetIpUrl).length;
     const availableInstances = upstreams.filter((u) => u.instanceStatus === 'AVAILABLE').length;
     const degradedUpstreams = upstreams.filter((u) => !u.healthy && u.instanceStatus === 'AVAILABLE').length;
     const rateLimitedUpstreams = upstreams.filter((u) => u.rateLimitedUntil && u.rateLimitedUntil > now).length;
@@ -363,6 +364,7 @@ export function createAdminApi(deps) {
         rateLimitedUpstreams,
         coolingDownUpstreams,
         missingShareUrl,
+        missingTailnetIpUrl,
         primaryAccountName: upstreams[0]?.accountName || upstreams[0]?.accountId || null,
         updatedAt: registryData.updatedAt || null,
         configuredAccounts: accountsConfig.accounts.length,

@@ -74,6 +74,10 @@ async function computeEndpointHealth(baseUrl) {
   };
 }
 
+function getInternalBaseUrl(state) {
+  return state.currentTailnetIpUrl || state.currentTailnetUrl || null;
+}
+
 async function syncRegistryForRuntime(rt, registry) {
   const state = rt.stateStore.loadState();
   let instanceStatus = 'UNKNOWN';
@@ -93,55 +97,9 @@ async function syncRegistryForRuntime(rt, registry) {
   const tailnetIpUrl = state.currentTailnetIpUrl || null;
   const localUrl = state.currentLocalUrl || 'http://127.0.0.1:9200';
 
-  // 选择最佳 baseUrl：先试 tailnetIpUrl，再试 tailnetUrl，不可达再降级到 shareUrl
-  let baseUrl = null;
-  if (tailnetIpUrl) {
-    const tailnetIpHealth = await computeEndpointHealth(tailnetIpUrl);
-    if (tailnetIpHealth.healthy) {
-      baseUrl = tailnetIpUrl;
-    } else if (tailnetUrl) {
-      const tailnetHealth = await computeEndpointHealth(tailnetUrl);
-      if (tailnetHealth.healthy) {
-        baseUrl = tailnetUrl;
-      } else if (shareUrl) {
-        const shareHealth = await computeEndpointHealth(shareUrl);
-        if (shareHealth.healthy) {
-          baseUrl = shareUrl;
-        } else {
-          baseUrl = tailnetIpUrl;
-        }
-      } else {
-        baseUrl = tailnetIpUrl;
-      }
-    } else if (shareUrl) {
-      const shareHealth = await computeEndpointHealth(shareUrl);
-      if (shareHealth.healthy) {
-        baseUrl = shareUrl;
-      } else {
-        baseUrl = tailnetIpUrl;
-      }
-    } else {
-      baseUrl = tailnetIpUrl;
-    }
-  } else if (tailnetUrl) {
-    const tailnetHealth = await computeEndpointHealth(tailnetUrl);
-    if (tailnetHealth.healthy) {
-      baseUrl = tailnetUrl;
-    } else if (shareUrl) {
-      // tailnet 不可达，降级到 shareUrl
-      const shareHealth = await computeEndpointHealth(shareUrl);
-      if (shareHealth.healthy) {
-        baseUrl = shareUrl;
-      } else {
-        // 两个都不健康，保留 tailnet 作为 baseUrl（至少记录地址）
-        baseUrl = tailnetUrl;
-      }
-    } else {
-      baseUrl = tailnetUrl;
-    }
-  } else {
-    baseUrl = shareUrl;
-  }
+  // 只使用 Tailscale 内网作为 manager/relay 的中间通信入口。
+  // shareUrl 仅保留为附带记录，不参与 baseUrl 选择与判活。
+  const baseUrl = getInternalBaseUrl(state);
 
   const endpointHealth = await computeEndpointHealth(baseUrl);
   const healthy = instanceStatus === 'AVAILABLE' && endpointHealth.healthy;

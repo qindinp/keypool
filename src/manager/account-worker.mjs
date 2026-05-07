@@ -7,6 +7,10 @@ const MISSING_SHARE_URL_RETRY_MS = 5 * 60 * 1000;
 const SHARE_URL_PROBE_RETRIES = 3;
 const SHARE_URL_PROBE_DELAY_MS = 4000;
 
+function getPreferredInternalUrl({ tailnetIpUrl, tailnetUrl }) {
+  return tailnetIpUrl || tailnetUrl || null;
+}
+
 function parseDeployResult(reply) {
   const text = String(reply || '');
   const normalized = text.replace(/\r/g, '');
@@ -128,11 +132,11 @@ async function probeShareUrlWithRetry({ shareUrl, timeoutMs = 15_000, retries = 
   for (let i = 0; i < retries; i++) {
     lastHealth = await probeHealth({ baseUrl: shareUrl, timeoutMs });
     if (lastHealth.ok) {
-      if (i > 0) log?.('info', `分享地址复检成功（第 ${i + 1} 次）: ${shareUrl}`);
+      if (i > 0) log?.('info', `内网入口复检成功（第 ${i + 1} 次）: ${shareUrl}`);
       return lastHealth;
     }
     if (i < retries - 1) {
-      log?.('warn', `分享地址健康检查失败（第 ${i + 1}/${retries} 次，${lastHealth.error || `health ${lastHealth.statusCode}`})，${delayMs / 1000}s 后重试`);
+      log?.('warn', `内网入口健康检查失败（第 ${i + 1}/${retries} 次，${lastHealth.error || `health ${lastHealth.statusCode}`})，${delayMs / 1000}s 后重试`);
       await sleep(delayMs);
     }
   }
@@ -205,6 +209,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '必须执行等价操作：进入 keypool 目录，git fetch origin，然后 git reset --hard origin/main。',
         '同步完成后，请输出一行 `GIT_HEAD=<当前提交SHA>`。',
         '不要覆盖 SOUL.md，不要修改任何全局安全配置。',
+        '本次整改要求：只使用 Tailscale 内网做中间通信，不要依赖 Funnel、公网分享地址、lhr.life、serveo、localhost.run 作为服务可用性的判定依据。',
         config.tunnelType === 'tailscale'
           ? `本次要求优先使用 Tailscale 隧道。请在启动服务前确保以下环境：TAILSCALE_HOSTNAME=${config.tailscaleHostname}、TAILSCALE_FUNNEL=${config.tailscaleFunnel ? 'true' : 'false'}、TAILSCALE_AUTO_INSTALL=${config.tailscaleAutoInstall ? 'true' : 'false'}${config.tailscaleAuthKey ? `、TAILSCALE_AUTHKEY=${config.tailscaleAuthKey}` : ''}。`
           : `本次要求使用 SSH 隧道，服务启动时应使用 tunnelType=${config.tunnelType}、tunnelService=${config.tunnelService}。`,
@@ -216,19 +221,16 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '如果是 tailscale 模式，必须在同一个 shell 会话中 export/设置好 TAILSCALE_HOSTNAME、TAILSCALE_FUNNEL、TAILSCALE_AUTO_INSTALL，以及在已提供时设置 TAILSCALE_AUTHKEY。',
         '随后必须在 keypool 目录重新启动新版服务，优先使用类似 `nohup node server/index.mjs >/tmp/keypool.log 2>&1 &` 的方式；如果需要环境变量，必须与启动命令处于同一 shell 生效范围。',
         '启动后检查 http://127.0.0.1:9200/health 是否可访问。',
-        '如果服务会异步建立隧道（Tailscale Funnel 或 SSH），请用轮询方式检查 keypool/.tunnel-url：每 5 秒读取一次，最多轮询 60 秒。',
-        '读取 keypool/.tunnel-url 时，如果文件第一行以 #stale 开头，说明这是旧地址标记，请继续等待下一次轮询，直到出现非 #stale 开头的地址或轮询超时。',
-        '如果最终拿到有效的非 stale 地址，请按 `SHARE_URL=<地址>` 单独输出一行。',
-        '如果轮询超时仍未拿到新地址，但文件中有 #stale 行，可以输出 `SHARE_URL=<stale地址>` 并额外输出 `SHARE_URL_STALE=true`。',
-        '如果没有拿到对外地址，也请明确输出 `SHARE_URL_MISSING`。',
-        '如果 tailscale 命令可用，请读取 `tailscale status --json` 中当前节点的 DNSName，并按 `TAILNET_URL=https://<dnsname>` 单独输出一行；如果拿不到则输出 `TAILNET_URL_MISSING`。',
-        '如果 tailscale 命令可用，请同时读取本机 Tailscale IPv4（100.x 地址）；如果能拿到，请按 `TAILNET_IP_URL=http://<ipv4>:9200` 单独输出一行；如果拿不到则输出 `TAILNET_IP_URL_MISSING`。',
+        '如果 tailscale 命令可用，请优先输出本机 Tailscale IPv4（100.x 地址），格式必须为 `TAILNET_IP_URL=http://<ipv4>:9200`；拿不到则输出 `TAILNET_IP_URL_MISSING`。',
+        '如果 tailscale 命令可用，请再读取 `tailscale status --json` 中当前节点的 DNSName，并按 `TAILNET_URL=https://<dnsname>` 单独输出一行；如果拿不到则输出 `TAILNET_URL_MISSING`。',
+        '读取 keypool/.tunnel-url 仅用于附带记录；如果存在有效地址，可按 `SHARE_URL=<地址>` 输出；如果没有则输出 `SHARE_URL_MISSING`。',
+        '不要因为没有 SHARE_URL 就判定失败；只要本地健康检查通过且能拿到 TAILNET_IP_URL，就视为成功。',
         '如果执行了 tailscale 安装，请额外输出 `TAILSCALE_INSTALL=ok` 或 `TAILSCALE_INSTALL=fail`。',
         '如果 tailscale 命令可用，请额外输出 `TAILSCALE_BIN=present`；否则输出 `TAILSCALE_BIN=missing`。',
-        '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
+        '重要：回复的最后一行必须是以下格式之一（独占一行，不要包裹在代码块中）：',
         `  ${marker}_OK`,
         `  ${marker}_FAIL`,
-        '根据结果二选一，不要两个都输出。前面可以有其他内容，但最后两行必须是 SHARE_URL 行和结果标记行。',
+        '根据结果二选一。前面可以有其他内容。',
       ].join('\n');
 
       log('deploy', '下发部署请求...');
@@ -243,7 +245,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         log('ok', 'KeyPool 部署成功，健康检查通过');
         if (parsed.tailnetIpUrl) log('info', `Tailscale 内网直连地址: ${parsed.tailnetIpUrl}`);
         if (parsed.tailnetUrl) log('info', `Tailscale 内网地址: ${parsed.tailnetUrl}`);
-        if (parsed.shareUrl) log('info', `分享地址: ${parsed.shareUrl}`);
+        if (parsed.shareUrl) log('info', `附带公网地址: ${parsed.shareUrl}`);
         return { success: true, reply, ...parsed };
       }
       if (hasFail) {
@@ -259,7 +261,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         log('info', '回复:', reply?.slice(0, 500));
         if (parsed.tailnetIpUrl) log('info', `Tailscale 内网直连地址: ${parsed.tailnetIpUrl}`);
         if (parsed.tailnetUrl) log('info', `Tailscale 内网地址: ${parsed.tailnetUrl}`);
-        if (parsed.shareUrl) log('info', `分享地址: ${parsed.shareUrl}`);
+        if (parsed.shareUrl) log('info', `附带公网地址: ${parsed.shareUrl}`);
         return { success: true, reply, ...parsed };
       }
 
@@ -311,7 +313,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
   async function recoverAvailableInstance() {
     const client = new DeployClient({ cookie, getTicket: api.getTicket, config, log });
     try {
-      log('link', '分享地址异常，尝试直连实例 Gateway 做原地探测...');
+      log('link', '内网入口异常，尝试直连实例 Gateway 做原地探测...');
       await withRetry('WS连接', () => client.connect(), {
         maxRetries: config.maxRetries,
         retryBaseDelay: config.retryBaseDelay,
@@ -323,23 +325,21 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       const recoverPrompt = [
         '请不要重新创建实例，也不要重新 git clone。',
         '你现在只做原地检查和原地恢复。',
+        '整改要求：中间通信只依赖 Tailscale 内网，不要把 Funnel、公网分享地址、.ts.net 域名作为成功判定前提。',
         '先检查 keypool 目录下服务是否正在运行，并访问 http://127.0.0.1:9200/health 。',
         '如果本地健康检查已经通过，请回复 LOCAL_OK。',
         '如果本地服务未运行或健康检查失败，请在已有 keypool 目录中原地重新启动 node server.mjs，等待健康检查恢复。',
         '如果原地重启成功，请回复 SERVICE_RESTARTED。',
         '如果服务本来就在运行，也可以回复 SERVICE_RUNNING。',
         '请额外检查以下信息并一并返回：',
-        '1. keypool/.tunnel-url 是否存在；如果存在，读取内容。如果第一行以 #stale 开头，说明是旧地址，仍按 `SHARE_URL=<地址>` 输出但额外输出 `SHARE_URL_STALE=true`；如果非 stale，正常输出 `SHARE_URL=<地址>`。',
-        '2. 如果不存在，请输出 `SHARE_URL_MISSING`。',
-        '3. 输出 `TUNNEL_FILE=present` 或 `TUNNEL_FILE=missing`。',
-        '4. 输出 `TAILSCALE_FUNNEL=running` 或 `TAILSCALE_FUNNEL=missing`，用于表示 Tailscale Funnel 是否正常工作。',
-        '5. 如果 tailscale 命令可用，请读取 `tailscale status --json` 中当前节点的 DNSName，并按 `TAILNET_URL=https://<dnsname>` 单独输出一行；如果拿不到则输出 `TAILNET_URL_MISSING`。',
-        '6. 如果 tailscale 命令可用，请同时读取本机 Tailscale IPv4（100.x 地址）；如果能拿到，请按 `TAILNET_IP_URL=http://<ipv4>:9200` 单独输出一行；如果拿不到则输出 `TAILNET_IP_URL_MISSING`。',
-        '7. 如可行，附带 /tmp/keypool.log 最后 20 行中的 tunnel/tailscale 相关关键信息。',
-        '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
+        '1. 如果 tailscale 命令可用，请优先输出本机 Tailscale IPv4（100.x 地址），格式必须为 `TAILNET_IP_URL=http://<ipv4>:9200`；如果拿不到则输出 `TAILNET_IP_URL_MISSING`。',
+        '2. 如果 tailscale 命令可用，请读取 `tailscale status --json` 中当前节点的 DNSName，并按 `TAILNET_URL=https://<dnsname>` 单独输出一行；如果拿不到则输出 `TAILNET_URL_MISSING`。',
+        '3. keypool/.tunnel-url 与 SHARE_URL 只做附带记录：如存在可输出 `SHARE_URL=<地址>`，否则输出 `SHARE_URL_MISSING`。',
+        '4. 如可行，附带 /tmp/keypool.log 最后 20 行中的 tailscale 相关关键信息。',
+        '重要：回复的最后一行必须是以下格式之一（独占一行，不要包裹在代码块中）：',
         `  ${marker}_OK`,
         `  ${marker}_FAIL`,
-        '根据结果二选一。前面可以有其他内容，但最后两行必须是 SHARE_URL 行和结果标记行。',
+        '根据结果二选一。',
       ].join('\n');
 
       const reply = await client.chat(recoverPrompt, { timeoutMs: config.deployTimeout, matchText: marker });
@@ -366,9 +366,9 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       const shareUrl = parsed.shareUrl || null;
       const tailnetUrl = parsed.tailnetUrl || null;
       const tailnetIpUrl = parsed.tailnetIpUrl || null;
-      const accessibleUrl = tailnetIpUrl || tailnetUrl || shareUrl || null;
+      const accessibleUrl = getPreferredInternalUrl({ tailnetIpUrl, tailnetUrl });
       const localUrl = parsed.localUrl || 'http://127.0.0.1:9200';
-      const localRecovered = parsed.healthOk || parsed.started || !!accessibleUrl || reply?.includes('LOCAL_OK') || reply?.includes('SERVICE_RUNNING') || reply?.includes('SERVICE_RESTARTED');
+      const localRecovered = parsed.healthOk || parsed.started || !!tailnetIpUrl || reply?.includes('LOCAL_OK') || reply?.includes('SERVICE_RUNNING') || reply?.includes('SERVICE_RESTARTED');
       if (!localRecovered) {
         log('warn', '实例原地探测未能确认本地服务健康恢复');
         log('info', '回复:', reply?.slice(0, 500));
@@ -376,14 +376,14 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       }
 
       if (!accessibleUrl) {
-        log('warn', '实例内服务已恢复，但未返回可访问入口地址');
+        log('warn', '实例内服务已恢复，但未返回 Tailscale 内网入口');
         log('info', '回复:', reply?.slice(0, 500));
-        return { success: false, reply, shareUrl: null, tailnetUrl, tailnetIpUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: true };
+        return { success: false, reply, shareUrl, tailnetUrl, tailnetIpUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: true };
       }
 
       const shareHealth = await probeShareUrlWithRetry({ shareUrl: accessibleUrl, timeoutMs: 15_000, log });
       if (!shareHealth.ok) {
-        log('warn', `实例返回了可访问入口，但健康检查仍失败 (${shareHealth.error || `health ${shareHealth.statusCode}`})；先保留地址，等待后续复检`);
+        log('warn', `实例返回了 Tailscale 内网入口，但健康检查仍失败 (${shareHealth.error || `health ${shareHealth.statusCode}`})；先保留地址，等待后续复检`);
         log('info', '回复:', reply?.slice(0, 500));
         return {
           success: true,
@@ -423,27 +423,26 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
       const marker = `TUNNEL_${Date.now().toString(36)}`;
       const prompt = [
-        '请只检查 tunnel 状态，不要重启服务，不要重新部署。',
-        '1. 检查 keypool/.tunnel-url 是否存在，读取内容。如果第一行以 #stale 开头，说明是旧地址，仍按 `SHARE_URL=<地址>` 输出但额外输出 `SHARE_URL_STALE=true`；如果非 stale，正常输出。',
-        '2. 如果不存在，输出 `SHARE_URL_MISSING`。',
-        '3. 如果 tailscale 可用，输出 `TAILNET_URL=https://<dnsname>`。',
-        '4. 如果 tailscale 可用且能拿到本机 Tailscale IPv4（100.x 地址），输出 `TAILNET_IP_URL=http://<ipv4>:9200`。',
-        '5. 检查 http://127.0.0.1:9200/health 是否正常，正常则输出 `LOCAL_OK`。',
-        `6. 最后一行输出 ${marker}_OK 或 ${marker}_FAIL。`,
+        '请只检查 Tailscale 内网通信状态，不要重启服务，不要重新部署。',
+        '1. 如果 tailscale 可用且能拿到本机 Tailscale IPv4（100.x 地址），输出 `TAILNET_IP_URL=http://<ipv4>:9200`。',
+        '2. 如果 tailscale 可用，输出 `TAILNET_URL=https://<dnsname>`。',
+        '3. 检查 http://127.0.0.1:9200/health 是否正常，正常则输出 `LOCAL_OK`。',
+        '4. keypool/.tunnel-url 与 SHARE_URL 只做附带记录；如存在可输出 `SHARE_URL=<地址>`，否则输出 `SHARE_URL_MISSING`。',
+        `5. 最后一行输出 ${marker}_OK 或 ${marker}_FAIL。`,
       ].join('\n');
 
       const reply = await client.chat(prompt, { timeoutMs: 60_000, matchText: marker });
       const parsed = parseDeployResult(reply);
       const ok = reply?.includes(`${marker}_OK`) || reply?.includes('LOCAL_OK');
 
-      if (ok && (parsed.shareUrl || parsed.tailnetUrl || parsed.tailnetIpUrl)) {
-        const accessibleUrl = parsed.tailnetIpUrl || parsed.tailnetUrl || parsed.shareUrl;
+      if (ok && parsed.tailnetIpUrl) {
+        const accessibleUrl = parsed.tailnetIpUrl;
         const health = await probeShareUrlWithRetry({ shareUrl: accessibleUrl, timeoutMs: 15_000, log });
         if (health.ok) {
           log('ok', `Tunnel 恢复成功: ${accessibleUrl}`);
           return { success: true, shareUrl: parsed.shareUrl, tailnetUrl: parsed.tailnetUrl, tailnetIpUrl: parsed.tailnetIpUrl, localUrl: parsed.localUrl };
         }
-        log('warn', 'Tunnel 地址获取成功但健康检查失败');
+        log('warn', 'Tailscale 内网地址获取成功但健康检查失败');
         return { success: false, shareUrl: parsed.shareUrl, tailnetUrl: parsed.tailnetUrl, tailnetIpUrl: parsed.tailnetIpUrl };
       }
 
@@ -501,8 +500,8 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     if (!ready) {
       log('error', '实例未就绪，续期流程中止');
       // 尝试恢复旧状态标记，避免丢失旧地址
-      if (oldShareUrl) {
-        log('info', `保留旧分享地址: ${oldShareUrl}`);
+      if (oldTailnetIpUrl) {
+        log('info', `保留旧 Tailscale 内网直连地址: ${oldTailnetIpUrl}`);
         const state = stateStore.loadState();
         state.currentShareUrl = oldShareUrl;
         state.currentTailnetUrl = oldTailnetUrl;
@@ -558,12 +557,12 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         const previousHealth = await probeHealth({ baseUrl: previousShareUrl, timeoutMs: 15_000 });
         if (previousHealth.ok) {
           effectiveShareUrl = previousShareUrl;
-          log('info', `本轮未拿到新分享地址，保留已验证健康的旧地址: ${previousShareUrl}`);
+          log('info', `本轮未拿到新公网地址，保留已验证健康的旧公网地址作为附带记录: ${previousShareUrl}`);
         } else {
-          log('warn', `本轮未拿到新分享地址，且旧地址已不健康 (${previousHealth.error || `health ${previousHealth.statusCode}`})，不再保留`);
+          log('warn', `本轮未拿到新公网地址，且旧公网地址已不健康 (${previousHealth.error || `health ${previousHealth.statusCode}`})，不再保留`);
         }
       } catch (e) {
-        log('warn', `校验旧分享地址失败 (${e.message})，不再保留`);
+        log('warn', `校验旧公网地址失败 (${e.message})，不再保留`);
       }
     }
 
@@ -594,15 +593,16 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
     if (effectiveTailnetIpUrl) {
       log('ok', `✨ 第 ${state.deployCount} 次续期完成 | Tailscale 内网直连地址: ${effectiveTailnetIpUrl}`);
-      if (effectiveTailnetUrl) log('info', `Tailscale 域名地址: ${effectiveTailnetUrl}`);
-      if (effectiveShareUrl) log('info', `公网分享地址: ${effectiveShareUrl}`);
+      if (effectiveTailnetUrl) log('info', `Tailscale 域名地址(仅记录): ${effectiveTailnetUrl}`);
+      if (effectiveShareUrl) log('info', `公网分享地址(仅记录): ${effectiveShareUrl}`);
     } else if (effectiveTailnetUrl) {
       log('ok', `✨ 第 ${state.deployCount} 次续期完成 | Tailscale 内网地址: ${effectiveTailnetUrl}`);
-      if (effectiveShareUrl) log('info', `公网分享地址: ${effectiveShareUrl}`);
+      if (effectiveShareUrl) log('info', `公网分享地址(仅记录): ${effectiveShareUrl}`);
     } else if (effectiveShareUrl) {
-      log('ok', `✨ 第 ${state.deployCount} 次续期完成 | 分享地址: ${effectiveShareUrl}`);
+      log('warn', `✨ 第 ${state.deployCount} 次续期完成 | 仅拿到公网分享地址，未获得 Tailscale 内网入口`);
+      log('info', `公网分享地址(仅记录): ${effectiveShareUrl}`);
     } else {
-      log('warn', `✨ 第 ${state.deployCount} 次续期完成 | 本地服务已恢复，但未获取到新的分享地址`);
+      log('warn', `✨ 第 ${state.deployCount} 次续期完成 | 本地服务已恢复，但未获取到新的 Tailscale 内网入口`);
       log('info', `本地地址: ${state.currentLocalUrl}`);
     }
     return true;
@@ -718,20 +718,22 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
               state.currentLocalUrl = recovered.localUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
               state.lastHealthError = null;
               stateStore.saveState(state, log);
-              if (state.currentTailnetIpUrl || state.currentTailnetUrl || state.currentShareUrl) {
+              if (state.currentTailnetIpUrl || state.currentTailnetUrl) {
                 log('ok', '实例原地恢复成功，跳过重部署');
               } else {
-                log('warn', '实例原地恢复成功，但未获得新的分享地址；将等待后续重新获取');
+                log('warn', '实例原地恢复成功，但未获得新的 Tailscale 内网入口；将等待后续重新获取');
               }
             } else {
               state.currentShareUrl = null;
+              state.currentTailnetUrl = null;
+              state.currentTailnetIpUrl = null;
               stateStore.saveState(state, log);
-              log('warn', '实例原地恢复失败，已清除失效分享地址，回退到完整续期/重部署流程');
+              log('warn', '实例原地恢复失败，已清除失效内网入口，回退到完整续期/重部署流程');
               await renewFlow('available-but-local-unhealthy');
             }
           } else if (endpointUnhealthy) {
             // 本地服务正常，但外部入口不通 → 先尝试轻量级 tunnel 恢复
-            log('warn', `本地服务正常，但可访问入口健康检查失败 (${endpointError})`);
+            log('warn', `本地服务正常，但 Tailscale 内网入口健康检查失败 (${endpointError})`);
             state.lastHealthError = `share:${endpointError}`;
             stateStore.saveState(state, log);
 
@@ -764,9 +766,9 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
           if (missingSinceLastDeploy < MISSING_SHARE_URL_RETRY_MS) {
             const waitSec = Math.max(1, Math.ceil((MISSING_SHARE_URL_RETRY_MS - missingSinceLastDeploy) / 1000));
-            log('warn', `实例缺少分享地址；暂不重部署，等待 tunnel 输出（约 ${waitSec}s 后再试）`);
+            log('warn', `实例缺少 Tailscale 内网入口；暂不重部署，等待内网上报（约 ${waitSec}s 后再试）`);
           } else {
-            log('warn', '实例长时间缺少分享地址；先尝试实例内原地探测 tunnel 状态');
+            log('warn', '实例长时间缺少 Tailscale 内网入口；先尝试实例内原地探测');
             const recovered = await recoverAvailableInstance();
             if (recovered.success && (recovered.tailnetIpUrl || recovered.tailnetUrl || recovered.shareUrl)) {
               state.currentShareUrl = recovered.shareUrl || state.currentShareUrl || null;
@@ -781,11 +783,11 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
               state.currentTailnetUrl = recovered.tailnetUrl || state.currentTailnetUrl || null;
               state.currentTailnetIpUrl = recovered.tailnetIpUrl || state.currentTailnetIpUrl || null;
               state.currentLocalUrl = recovered.localUrl || currentLocalUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
-              state.lastHealthError = 'missing shareUrl';
+              state.lastHealthError = 'missing tailnetIpUrl';
               stateStore.saveState(state, log);
-              log('warn', '实例内服务正常，但 tunnel 地址仍未产出；暂不重部署，等待下一轮再探测');
+              log('warn', '实例内服务正常，但 Tailscale 内网入口仍未产出；暂不重部署，等待下一轮再探测');
             } else {
-              log('warn', '实例缺少分享地址，且原地探测未恢复；尝试自动重新部署');
+              log('warn', '实例缺少 Tailscale 内网入口，且原地探测未恢复；尝试自动重新部署');
               await renewFlow('available-without-share-url');
             }
           }
