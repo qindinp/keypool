@@ -12,11 +12,14 @@ function parseDeployResult(reply) {
   const normalized = text.replace(/\r/g, '');
   const shareUrlLineMatch = normalized.match(/(?:^|\n)SHARE_URL\s*[=:]\s*(https?:\/\/[^\s`"'<>]+)/i);
   const labeledShareUrl = shareUrlLineMatch ? shareUrlLineMatch[1] : null;
+  const tailnetUrlLineMatch = normalized.match(/(?:^|\n)TAILNET_URL\s*[=:]\s*(https?:\/\/[^\s`"'<>]+)/i);
+  const labeledTailnetUrl = tailnetUrlLineMatch ? tailnetUrlLineMatch[1] : null;
   const candidateUrls = Array.from(normalized.matchAll(/https?:\/\/[^\s`"'<>]+/g)).map(m => m[0]);
   const shareUrl = [labeledShareUrl, ...candidateUrls]
     .map(url => normalizeShareUrl(url))
     .filter(Boolean)
     .sort((a, b) => getShareUrlPriority(a) - getShareUrlPriority(b))[0] || null;
+  const tailnetUrl = normalizeTailnetUrl(labeledTailnetUrl);
   const localUrlMatch = normalized.match(/http:\/\/127\.0\.0\.1:9200(?:\/health)?/);
   const healthOk = /健康检查通过|LOCAL_OK/.test(normalized);
   const started = /服务已成功启动|SERVICE_RUNNING|SERVICE_RESTARTED/.test(normalized);
@@ -24,11 +27,25 @@ function parseDeployResult(reply) {
 
   return {
     shareUrl,
+    tailnetUrl,
     localUrl: localUrlMatch ? localUrlMatch[0] : null,
     healthOk,
     started,
     shareUrlMissing,
   };
+}
+
+function normalizeTailnetUrl(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (!/^https?:$/.test(parsed.protocol)) return null;
+    const host = parsed.hostname.toLowerCase();
+    if (!host.endsWith('.ts.net')) return null;
+    return url.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
 }
 
 function normalizeShareUrl(url) {
@@ -163,6 +180,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '如果服务会异步建立隧道（Tailscale Funnel 或 SSH），请额外等待最多 45 秒，检查 keypool/.tunnel-url 是否出现。',
         '如果 keypool/.tunnel-url 存在，请读取其中地址并按 `SHARE_URL=<地址>` 单独输出一行。',
         '如果没有拿到对外地址，也请明确输出 `SHARE_URL_MISSING`。',
+        '如果 tailscale 命令可用，请读取 `tailscale status --json` 中当前节点的 DNSName，并按 `TAILNET_URL=https://<dnsname>` 单独输出一行；如果拿不到则输出 `TAILNET_URL_MISSING`。',
         '如果执行了 tailscale 安装，请额外输出 `TAILSCALE_INSTALL=ok` 或 `TAILSCALE_INSTALL=fail`。',
         '如果 tailscale 命令可用，请额外输出 `TAILSCALE_BIN=present`；否则输出 `TAILSCALE_BIN=missing`。',
         '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
@@ -181,6 +199,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
       if (hasOk && !hasFail) {
         log('ok', 'KeyPool 部署成功，健康检查通过');
+        if (parsed.tailnetUrl) log('info', `Tailscale 内网地址: ${parsed.tailnetUrl}`);
         if (parsed.shareUrl) log('info', `分享地址: ${parsed.shareUrl}`);
         return { success: true, reply, ...parsed };
       }
@@ -195,6 +214,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       if (strongSuccess) {
         log('ok', 'KeyPool 部署成功（根据明确健康状态文本判定）');
         log('info', '回复:', reply?.slice(0, 500));
+        if (parsed.tailnetUrl) log('info', `Tailscale 内网地址: ${parsed.tailnetUrl}`);
         if (parsed.shareUrl) log('info', `分享地址: ${parsed.shareUrl}`);
         return { success: true, reply, ...parsed };
       }
@@ -214,7 +234,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       return { success: false, reply, ...parsed };
     } catch (e) {
       log('error', '部署失败:', e.message);
-      return { success: false, reply: '', shareUrl: null, localUrl: null, healthOk: false, started: false };
+      return { success: false, reply: '', shareUrl: null, tailnetUrl: null, localUrl: null, healthOk: false, started: false };
     } finally {
       client.close();
     }
@@ -269,7 +289,8 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         '2. 如果不存在，请输出 `SHARE_URL_MISSING`。',
         '3. 输出 `TUNNEL_FILE=present` 或 `TUNNEL_FILE=missing`。',
         '4. 输出 `TAILSCALE_FUNNEL=running` 或 `TAILSCALE_FUNNEL=missing`，用于表示 Tailscale Funnel 是否正常工作。',
-        '5. 如可行，附带 /tmp/keypool.log 最后 20 行中的 tunnel/tailscale 相关关键信息。',
+        '5. 如果 tailscale 命令可用，请读取 `tailscale status --json` 中当前节点的 DNSName，并按 `TAILNET_URL=https://<dnsname>` 单独输出一行；如果拿不到则输出 `TAILNET_URL_MISSING`。',
+        '6. 如可行，附带 /tmp/keypool.log 最后 20 行中的 tunnel/tailscale 相关关键信息。',
         '重要：回复的最后两行必须是以下格式（独占一行，不要包裹在代码块中）：',
         `  ${marker}_OK`,
         `  ${marker}_FAIL`,
@@ -298,28 +319,31 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       }
 
       const shareUrl = parsed.shareUrl || null;
+      const tailnetUrl = parsed.tailnetUrl || null;
+      const accessibleUrl = tailnetUrl || shareUrl || null;
       const localUrl = parsed.localUrl || 'http://127.0.0.1:9200';
-      const localRecovered = parsed.healthOk || parsed.started || !!shareUrl || reply?.includes('LOCAL_OK') || reply?.includes('SERVICE_RUNNING') || reply?.includes('SERVICE_RESTARTED');
+      const localRecovered = parsed.healthOk || parsed.started || !!accessibleUrl || reply?.includes('LOCAL_OK') || reply?.includes('SERVICE_RUNNING') || reply?.includes('SERVICE_RESTARTED');
       if (!localRecovered) {
         log('warn', '实例原地探测未能确认本地服务健康恢复');
         log('info', '回复:', reply?.slice(0, 500));
-        return { success: false, reply, shareUrl, localUrl, healthOk: false, started: parsed.started, tunnelMissing: false };
+        return { success: false, reply, shareUrl, tailnetUrl, localUrl, healthOk: false, started: parsed.started, tunnelMissing: false };
       }
 
-      if (!shareUrl) {
-        log('warn', '实例内服务已恢复，但未返回可对外访问的分享地址');
+      if (!accessibleUrl) {
+        log('warn', '实例内服务已恢复，但未返回可访问入口地址');
         log('info', '回复:', reply?.slice(0, 500));
-        return { success: false, reply, shareUrl: null, localUrl, healthOk: true, started: parsed.started, tunnelMissing: true };
+        return { success: false, reply, shareUrl: null, tailnetUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: true };
       }
 
-      const shareHealth = await probeShareUrlWithRetry({ shareUrl, timeoutMs: 15_000, log });
+      const shareHealth = await probeShareUrlWithRetry({ shareUrl: accessibleUrl, timeoutMs: 15_000, log });
       if (!shareHealth.ok) {
-        log('warn', `实例返回了分享地址，但对外健康检查仍失败 (${shareHealth.error || `health ${shareHealth.statusCode}`})；先保留地址，等待后续复检`);
+        log('warn', `实例返回了可访问入口，但健康检查仍失败 (${shareHealth.error || `health ${shareHealth.statusCode}`})；先保留地址，等待后续复检`);
         log('info', '回复:', reply?.slice(0, 500));
         return {
           success: true,
           reply,
           shareUrl,
+          tailnetUrl,
           localUrl,
           healthOk: true,
           started: parsed.started,
@@ -329,11 +353,11 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         };
       }
 
-      log('ok', `实例原地恢复成功 | 分享地址: ${shareUrl}`);
-      return { success: true, reply, shareUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: false, shareUrlPending: false };
+      log('ok', `实例原地恢复成功 | 可访问入口: ${accessibleUrl}`);
+      return { success: true, reply, shareUrl, tailnetUrl, localUrl, healthOk: true, started: parsed.started, tunnelMissing: false, shareUrlPending: false };
     } catch (e) {
       log('warn', '实例原地探测失败:', e.message);
-      return { success: false, reply: '', shareUrl: null, localUrl: null, healthOk: false, started: false, tunnelMissing: false };
+      return { success: false, reply: '', shareUrl: null, tailnetUrl: null, localUrl: null, healthOk: false, started: false, tunnelMissing: false };
     } finally {
       client.close();
     }
@@ -345,6 +369,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     // 保存旧状态，用于部署失败时回滚
     const oldState = stateStore.loadState();
     const oldShareUrl = oldState.currentShareUrl || null;
+    const oldTailnetUrl = oldState.currentTailnetUrl || null;
     const oldLocalUrl = oldState.currentLocalUrl || null;
     const oldKey = oldState.currentKey || null;
 
@@ -380,6 +405,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         log('info', `保留旧分享地址: ${oldShareUrl}`);
         const state = stateStore.loadState();
         state.currentShareUrl = oldShareUrl;
+        state.currentTailnetUrl = oldTailnetUrl;
         state.currentLocalUrl = oldLocalUrl;
         if (oldKey) state.currentKey = oldKey;
         state.lastHealthError = 'renew-failed-kept-old';
@@ -415,7 +441,9 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
     const state = stateStore.loadState();
     const previousShareUrl = state.currentShareUrl || null;
+    const previousTailnetUrl = state.currentTailnetUrl || null;
     let effectiveShareUrl = deployResult.shareUrl || null;
+    const effectiveTailnetUrl = deployResult.tailnetUrl || previousTailnetUrl || null;
     if (!effectiveShareUrl && previousShareUrl) {
       try {
         const previousHealth = await probeHealth({ baseUrl: previousShareUrl, timeoutMs: 15_000 });
@@ -435,6 +463,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     state.deployCount = (state.deployCount || 0) + 1;
     if (newKey) state.currentKey = newKey;
     state.currentShareUrl = effectiveShareUrl;
+    state.currentTailnetUrl = effectiveTailnetUrl;
     state.currentLocalUrl = deployResult.localUrl || 'http://127.0.0.1:9200';
     state.history = state.history || [];
     state.history.push({
@@ -443,6 +472,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
       expireTime: newStatus.expireTime,
       key: newKey ? newKey.slice(0, 20) + '...' : null,
       shareUrl: effectiveShareUrl,
+      tailnetUrl: effectiveTailnetUrl,
       localUrl: deployResult.localUrl || 'http://127.0.0.1:9200',
       success: true,
     });
@@ -450,7 +480,10 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     state.lastHealthError = null;
     stateStore.saveState(state, log);
 
-    if (effectiveShareUrl) {
+    if (effectiveTailnetUrl) {
+      log('ok', `✨ 第 ${state.deployCount} 次续期完成 | Tailscale 内网地址: ${effectiveTailnetUrl}`);
+      if (effectiveShareUrl) log('info', `公网分享地址: ${effectiveShareUrl}`);
+    } else if (effectiveShareUrl) {
       log('ok', `✨ 第 ${state.deployCount} 次续期完成 | 分享地址: ${effectiveShareUrl}`);
     } else {
       log('warn', `✨ 第 ${state.deployCount} 次续期完成 | 本地服务已恢复，但未获取到新的分享地址`);
@@ -465,6 +498,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     console.log('─'.repeat(40));
     console.log(`  部署次数: ${state.deployCount || 0}`);
     console.log(`  当前 Key: ${state.currentKey ? state.currentKey.slice(0, 20) + '...' : '未使用 / 未记录'}`);
+    console.log(`  Tailscale 内网地址: ${state.currentTailnetUrl || '未知'}`);
     console.log(`  分享地址: ${state.currentShareUrl || '未知'}`);
     console.log(`  本地地址: ${state.currentLocalUrl || 'http://127.0.0.1:9200'}`);
     console.log(`  上次部署: ${state.lastDeployAt ? new Date(state.lastDeployAt).toLocaleString() : '无'}`);
@@ -520,8 +554,10 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
         const currentStatus = status.status || 'UNKNOWN';
         const currentShareUrl = state.currentShareUrl || null;
+        const currentTailnetUrl = state.currentTailnetUrl || null;
         const currentLocalUrl = state.currentLocalUrl || null;
-        const hasDeployment = Boolean(state.lastDeployAt) && Boolean(currentShareUrl || currentLocalUrl);
+        const currentBaseUrl = currentTailnetUrl || currentShareUrl || null;
+        const hasDeployment = Boolean(state.lastDeployAt) && Boolean(currentBaseUrl || currentLocalUrl);
         let endpointUnhealthy = false;
         let endpointError = null;
         if (state.lastExpireTime !== status.expireTime || state.lastObservedStatus !== currentStatus) {
@@ -542,10 +578,10 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
         } else if (currentStatus === 'AVAILABLE' && !hasDeployment) {
           log('warn', '实例已可用但尚未完成部署，尝试自动部署');
           await renewFlow('available-but-not-deployed');
-        } else if (currentStatus === 'AVAILABLE' && currentShareUrl) {
+        } else if (currentStatus === 'AVAILABLE' && currentBaseUrl) {
           const localBaseUrl = currentLocalUrl || 'http://127.0.0.1:9200';
           const localHealth = await probeLocalUrl(localBaseUrl, 10_000);
-          const shareHealth = await probeHealth({ baseUrl: currentShareUrl, timeoutMs: 15_000 });
+          const shareHealth = await probeHealth({ baseUrl: currentBaseUrl, timeoutMs: 15_000 });
           const localUnhealthy = !localHealth.ok;
           endpointUnhealthy = !shareHealth.ok;
           endpointError = shareHealth.error || `health ${shareHealth.statusCode}`;
@@ -558,11 +594,12 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
 
             const recovered = await recoverAvailableInstance();
             if (recovered.success) {
-              state.currentShareUrl = recovered.shareUrl || null;
+              state.currentShareUrl = recovered.shareUrl || state.currentShareUrl || null;
+              state.currentTailnetUrl = recovered.tailnetUrl || state.currentTailnetUrl || null;
               state.currentLocalUrl = recovered.localUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
               state.lastHealthError = null;
               stateStore.saveState(state, log);
-              if (state.currentShareUrl) {
+              if (state.currentTailnetUrl || state.currentShareUrl) {
                 log('ok', '实例原地恢复成功，跳过重部署');
               } else {
                 log('warn', '实例原地恢复成功，但未获得新的分享地址；将等待后续重新获取');
@@ -574,7 +611,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
               await renewFlow('available-but-local-unhealthy');
             }
           } else if (endpointUnhealthy) {
-            log('warn', `本地服务正常，但分享地址健康检查失败 (${endpointError})；跳过恢复/重部署，仅保留地址等待后续复检`);
+            log('warn', `本地服务正常，但可访问入口健康检查失败 (${endpointError})；跳过恢复/重部署，仅保留地址等待后续复检`);
             state.lastHealthError = `share:${endpointError}`;
             state.currentLocalUrl = localBaseUrl;
             stateStore.saveState(state, log);
@@ -582,7 +619,7 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
             state.lastHealthError = null;
             stateStore.saveState(state, log);
           }
-        } else if (currentStatus === 'AVAILABLE' && !currentShareUrl) {
+        } else if (currentStatus === 'AVAILABLE' && !currentBaseUrl) {
           const lastDeployAt = Number(state.lastDeployAt || 0);
           const missingSinceLastDeploy = lastDeployAt > 0 ? (now - lastDeployAt) : Number.POSITIVE_INFINITY;
 
@@ -592,14 +629,16 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
           } else {
             log('warn', '实例长时间缺少分享地址；先尝试实例内原地探测 tunnel 状态');
             const recovered = await recoverAvailableInstance();
-            if (recovered.success && recovered.shareUrl) {
-              state.currentShareUrl = recovered.shareUrl;
+            if (recovered.success && (recovered.tailnetUrl || recovered.shareUrl)) {
+              state.currentShareUrl = recovered.shareUrl || state.currentShareUrl || null;
+              state.currentTailnetUrl = recovered.tailnetUrl || state.currentTailnetUrl || null;
               state.currentLocalUrl = recovered.localUrl || currentLocalUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
               state.lastHealthError = null;
               stateStore.saveState(state, log);
-              log('ok', '实例原地探测成功，已恢复分享地址');
+              log('ok', '实例原地探测成功，已恢复可访问入口');
             } else if (recovered.tunnelMissing) {
               state.currentShareUrl = null;
+              state.currentTailnetUrl = recovered.tailnetUrl || state.currentTailnetUrl || null;
               state.currentLocalUrl = recovered.localUrl || currentLocalUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
               state.lastHealthError = 'missing shareUrl';
               stateStore.saveState(state, log);

@@ -81,6 +81,7 @@ export function createAdminApi(deps) {
         file: name,
         accountId: name.replace(/\.state\.json$/i, ''),
         currentShareUrl: state?.currentShareUrl || null,
+        currentTailnetUrl: state?.currentTailnetUrl || null,
         currentLocalUrl: state?.currentLocalUrl || null,
         deployCount: state?.deployCount || 0,
         lastDeployAt: state?.lastDeployAt || null,
