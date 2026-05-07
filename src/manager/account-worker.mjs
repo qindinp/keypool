@@ -363,6 +363,57 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     }
   }
 
+  async function recoverTunnelOnly() {
+    log('info', '尝试轻量级 tunnel 恢复（不重建实例）...');
+    const client = new DeployClient({ cookie, getTicket: api.getTicket, config, log });
+    try {
+      await withRetry('WS连接', () => client.connect(), {
+        maxRetries: 2,
+        retryBaseDelay: 3000,
+        retryMaxDelay: 10000,
+        log,
+      });
+
+      const marker = `TUNNEL_${Date.now().toString(36)}`;
+      const prompt = [
+        '请只检查 tunnel 状态，不要重启服务，不要重新部署。',
+        '1. 检查 keypool/.tunnel-url 是否存在，读取内容并按 `SHARE_URL=<地址>` 输出。',
+        '2. 如果不存在，输出 `SHARE_URL_MISSING`。',
+        '3. 如果 tailscale 可用，输出 `TAILNET_URL=https://<dnsname>`。',
+        '4. 检查 http://127.0.0.1:9200/health 是否正常，正常则输出 `LOCAL_OK`。',
+        `5. 最后一行输出 ${marker}_OK 或 ${marker}_FAIL。`,
+      ].join('\n');
+
+      const reply = await client.chat(prompt, { timeoutMs: 60_000, matchText: marker });
+      const parsed = parseDeployResult(reply);
+      const ok = reply?.includes(`${marker}_OK`) || reply?.includes('LOCAL_OK');
+
+      if (ok && (parsed.shareUrl || parsed.tailnetUrl)) {
+        const accessibleUrl = parsed.tailnetUrl || parsed.shareUrl;
+        const health = await probeShareUrlWithRetry({ shareUrl: accessibleUrl, timeoutMs: 15_000, log });
+        if (health.ok) {
+          log('ok', `Tunnel 恢复成功: ${accessibleUrl}`);
+          return { success: true, shareUrl: parsed.shareUrl, tailnetUrl: parsed.tailnetUrl, localUrl: parsed.localUrl };
+        }
+        log('warn', 'Tunnel 地址获取成功但健康检查失败');
+        return { success: false, shareUrl: parsed.shareUrl, tailnetUrl: parsed.tailnetUrl };
+      }
+
+      if (ok) {
+        log('info', '本地服务正常但 tunnel 未恢复');
+        return { success: false, localHealthy: true };
+      }
+
+      log('warn', 'Tunnel 恢复失败');
+      return { success: false };
+    } catch (e) {
+      log('warn', 'Tunnel 恢复异常:', e.message);
+      return { success: false };
+    } finally {
+      client.close();
+    }
+  }
+
   async function renewFlow(reason) {
     log('rocket', `开始续期流程 (${reason})`);
 
@@ -611,10 +662,29 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
               await renewFlow('available-but-local-unhealthy');
             }
           } else if (endpointUnhealthy) {
-            log('warn', `本地服务正常，但可访问入口健康检查失败 (${endpointError})；跳过恢复/重部署，仅保留地址等待后续复检`);
+            // 本地服务正常，但外部入口不通 → 先尝试轻量级 tunnel 恢复
+            log('warn', `本地服务正常，但可访问入口健康检查失败 (${endpointError})`);
             state.lastHealthError = `share:${endpointError}`;
-            state.currentLocalUrl = localBaseUrl;
             stateStore.saveState(state, log);
+
+            const tunnelRecovered = await recoverTunnelOnly();
+            if (tunnelRecovered.success) {
+              state.currentShareUrl = tunnelRecovered.shareUrl || state.currentShareUrl || null;
+              state.currentTailnetUrl = tunnelRecovered.tailnetUrl || state.currentTailnetUrl || null;
+              state.currentLocalUrl = tunnelRecovered.localUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
+              state.lastHealthError = null;
+              stateStore.saveState(state, log);
+              log('ok', 'Tunnel 恢复成功，跳过重部署');
+            } else if (tunnelRecovered.localHealthy) {
+              // tunnel 恢复失败但本地确认正常，保留地址等下轮复检，不做重部署
+              log('warn', 'Tunnel 恢复未成功，但本地服务确认正常；保留地址等待下轮复检');
+              state.currentLocalUrl = tunnelRecovered.localUrl || currentLocalUrl || 'http://127.0.0.1:9200';
+              stateStore.saveState(state, log);
+            } else {
+              // tunnel 和本地都不行，回退到完整重部署
+              log('warn', 'Tunnel 恢复失败，回退到完整续期/重部署流程');
+              await renewFlow('tunnel-unhealthy');
+            }
           } else if (state.lastHealthError) {
             state.lastHealthError = null;
             stateStore.saveState(state, log);
@@ -664,5 +734,5 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
     }
   }
 
-  return { waitForReady, deployKeyPool, fetchNewApiKey, recoverAvailableInstance, renewFlow, cmdStatus, cmdDeploy, runLoop };
+  return { waitForReady, deployKeyPool, fetchNewApiKey, recoverAvailableInstance, recoverTunnelOnly, renewFlow, cmdStatus, cmdDeploy, runLoop };
 }

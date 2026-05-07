@@ -18,9 +18,14 @@ export class DeployClient {
     this._chatMatcher = null;
     this._chatEventTexts = [];
     this._chatMatchedText = null;
+    this._pingInterval = null;
+    this._reconnecting = false;
+    this._closed = false;
+    this._onDisconnect = null;
   }
 
   async connect() {
+    this._closed = false;
     const ticket = await this.getTicket(this.cookie);
 
     return new Promise((resolve, reject) => {
@@ -50,6 +55,69 @@ export class DeployClient {
       req.on('error', (e) => { clearTimeout(timeout); reject(e); });
       req.end();
     });
+  }
+
+  /**
+   * 自动重连（指数退避）
+   * @param {number} [maxRetries] - 最大重试次数
+   * @returns {Promise<boolean>} 是否重连成功
+   */
+  async reconnect(maxRetries = 3) {
+    if (this._closed || this._reconnecting) return false;
+    this._reconnecting = true;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+      this.log('info', `WebSocket 重连 (${attempt}/${maxRetries})，${delay}ms 后尝试...`);
+      await new Promise(r => setTimeout(r, delay));
+
+      if (this._closed) { this._reconnecting = false; return false; }
+
+      try {
+        // 清理旧连接状态
+        this._clearPing();
+        this._rejectPending(new Error('reconnecting'));
+        this.connected = false;
+
+        await this.connect();
+        this._reconnecting = false;
+        this.log('ok', 'WebSocket 重连成功');
+        return true;
+      } catch (e) {
+        this.log('warn', `重连失败: ${e.message}`);
+      }
+    }
+
+    this._reconnecting = false;
+    this.log('error', 'WebSocket 重连耗尽所有重试');
+    return false;
+  }
+
+  /**
+   * 注册断开回调（供外部在连接丢失时触发恢复逻辑）
+   */
+  onDisconnect(fn) {
+    this._onDisconnect = fn;
+  }
+
+  _startPing() {
+    this._clearPing();
+    // 每 30 秒发一次 ping 帧保活
+    this._pingInterval = setInterval(() => {
+      if (this.socket && !this.socket.destroyed) {
+        try {
+          // WebSocket ping opcode = 0x09
+          this.socket.write(Buffer.from([0x89, 0x00]));
+        } catch {}
+      }
+    }, 30_000);
+  }
+
+  _clearPing() {
+    if (this._pingInterval) {
+      clearInterval(this._pingInterval);
+      this._pingInterval = null;
+    }
   }
 
   _captureChatEventText(value) {
@@ -145,18 +213,24 @@ export class DeployClient {
     this.socket.on('error', (e) => {
       this.log('error', 'Socket 错误:', e.message);
       this.connected = false;
+      this._clearPing();
       this._rejectPending(new Error('socket disconnected'));
     });
 
     this.socket.on('close', () => {
       this.connected = false;
+      this._clearPing();
       this._rejectPending(new Error('socket closed'));
+      if (!this._closed && this._onDisconnect) {
+        this._onDisconnect();
+      }
     });
 
     const connectId = randomUUID();
     this.pending.set(connectId, {
       resolve: (payload) => {
         this.connected = true;
+        this._startPing();
         this.log('link', `Gateway 已连接 (v${payload?.server?.version || '?'})`);
         resolve(payload);
       },
@@ -231,6 +305,23 @@ export class DeployClient {
     });
   }
 
+  /**
+   * 带自动重连的 request
+   */
+  async requestWithReconnect(method, params, timeoutMs = 30000) {
+    try {
+      return await this.request(method, params, timeoutMs);
+    } catch (e) {
+      if ((e.message.includes('socket') || e.message.includes('not connected')) && !this._closed) {
+        const reconnected = await this.reconnect();
+        if (reconnected) {
+          return this.request(method, params, timeoutMs);
+        }
+      }
+      throw e;
+    }
+  }
+
   async chat(message, options = this.config.chatTimeout) {
     const normalized = typeof options === 'number'
       ? { timeoutMs: options, matchText: null }
@@ -274,6 +365,8 @@ export class DeployClient {
   }
 
   close() {
+    this._closed = true;
+    this._clearPing();
     if (this.socket && !this.socket.destroyed) {
       try { this.socket.end(); } catch {}
     }

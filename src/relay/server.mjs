@@ -165,9 +165,11 @@ async function handleStreamProxy(req, res, path, body) {
 
   const onAbort = bindClientAbort(req);
   const attempts = [];
-  for (const upstream of upstreams) {
+  for (let i = 0; i < upstreams.length; i++) {
+    const upstream = upstreams[i];
     registry.markInflight(upstream.accountId, 1);
     let responseStarted = false;
+    let dataWritten = false;
     try {
       await proxyStream({
         baseUrl: upstream.baseUrl,
@@ -199,7 +201,11 @@ async function handleStreamProxy(req, res, path, body) {
 
           responseStarted = true;
           registry.markSuccess(upstream.accountId, { lastStatusCode: statusCode });
-          res.writeHead(statusCode, passthroughHeaders(upstreamRes.headers));
+
+          // 设置响应头，添加 X-KeyPool-Upstream 标识实际来源
+          const respHeaders = passthroughHeaders(upstreamRes.headers);
+          respHeaders['x-keypool-upstream'] = upstream.accountId || 'unknown';
+          res.writeHead(statusCode, respHeaders);
 
           onAbort(() => {
             upstreamRes.destroy(new Error('客户端已断开'));
@@ -207,11 +213,21 @@ async function handleStreamProxy(req, res, path, body) {
             if (!res.writableEnded) res.end();
           });
 
-          upstreamRes.on('data', chunk => res.write(chunk));
+          upstreamRes.on('data', chunk => {
+            dataWritten = true;
+            res.write(chunk);
+          });
           upstreamRes.on('end', () => res.end());
           upstreamRes.on('error', (error) => {
             if (!isClientAbortError(error)) {
               registry.markFailure(upstream.accountId, error.message);
+              // 流式传输中途失败：写入 SSE 错误事件让客户端优雅处理
+              if (dataWritten && !res.writableEnded) {
+                try {
+                  res.write(`data: ${JSON.stringify({ error: { message: 'upstream stream interrupted', type: 'upstream_error' } })}\n\n`);
+                  res.write('data: [DONE]\n\n');
+                } catch {}
+              }
             }
             if (!res.writableEnded) res.end();
           });
@@ -236,8 +252,10 @@ async function handleStreamProxy(req, res, path, body) {
     }
   }
 
+  // 所有 upstream 都失败，返回结构化错误
   return sendJson(res, 502, {
     error: 'all_upstreams_failed',
+    message: `已尝试 ${attempts.length} 个上游，全部失败`,
     attempts,
   });
 }
@@ -261,9 +279,9 @@ async function handleProxy(req, res, path) {
   for (const upstream of upstreams) {
     const forwarded = await forwardViaUpstream(upstream, req, path, body, onAbort);
     if (forwarded.ok) {
-      res.writeHead(forwarded.result.statusCode, {
-        'content-type': forwarded.result.headers['content-type'] || 'application/json; charset=utf-8',
-      });
+      const respHeaders = passthroughHeaders(forwarded.result.headers);
+      respHeaders['x-keypool-upstream'] = upstream.accountId || 'unknown';
+      res.writeHead(forwarded.result.statusCode, respHeaders);
       res.end(forwarded.result.body);
       return;
     }
@@ -285,6 +303,7 @@ async function handleProxy(req, res, path) {
 
   return sendJson(res, 502, {
     error: 'all_upstreams_failed',
+    message: `已尝试 ${attempts.length} 个上游，全部失败`,
     attempts,
   });
 }
