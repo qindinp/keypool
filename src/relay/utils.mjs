@@ -22,10 +22,18 @@ export function sendHtml(res, statusCode, html) {
   res.end(html);
 }
 
-export function readBody(req) {
+export function readBody(req, maxSize = 10 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', chunk => data += chunk);
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > maxSize) {
+        req.destroy(new Error(`请求体超过 ${Math.round(maxSize / 1024 / 1024)}MB 限制`));
+        return;
+      }
+      data += chunk;
+    });
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });

@@ -70,10 +70,7 @@ function passthroughHeaders(headers) {
   const allow = [
     'content-type',
     'cache-control',
-    'connection',
     'x-request-id',
-    'transfer-encoding',
-    'date',
     'x-accel-buffering',
   ];
   const next = {};

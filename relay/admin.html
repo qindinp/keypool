@@ -282,6 +282,7 @@
       upstreamMap: new Map(),
       stateMap: new Map(),
       helpOpen: false,
+      refreshing: false,
     };
 
     function fmtTime(value) {
@@ -610,7 +611,7 @@
         syncSelectedAccountFromDom();
         if (action === 'remove') {
           state.accounts.splice(index, 1);
-          state.selectedAccountIndex = Math.max(0, index - 1);
+          state.selectedAccountIndex = state.accounts.length > 0 ? Math.max(0, index - 1) : 0;
           reindexPriorities();
           state.dirty = true;
           renderAccountEditor();
@@ -679,7 +680,7 @@
         method: 'POST',
         cache: 'no-store',
         headers: { 'content-type': 'application/json' },
-        body: body ? JSON.stringify(body) : null,
+        body: JSON.stringify(body ?? {}),
       });
       const text = await res.text();
       let payload = null;
@@ -733,6 +734,7 @@
     async function runUpstreamAction(accountId, action) {
       const key = actionKey(accountId, action);
       if (state.busyActions.has(key)) return;
+      if (action === 'destroy' && !confirm(`确定要销毁实例 ${accountId} 吗？此操作不可恢复。`)) return;
       state.busyActions.add(key);
       const actionTextMap = { deploy: '立即部署', recover: '立即恢复', destroy: '销毁实例' };
       const actionText = actionTextMap[action] || action;
@@ -764,6 +766,9 @@
       }
     }
     async function refreshAll() {
+      if (state.refreshing) return;
+      state.refreshing = true;
+      try {
       const origin = window.location.origin;
       const accessUrl = `${origin}/v1`;
       $('accessUrl').textContent = accessUrl;
@@ -832,16 +837,27 @@
       const logs = Array.isArray(data.logs) ? data.logs : [];
       state.lastLogsText = logs.map(item => `[${item.file}] ${item.line}`).join('\n');
       $('logBox').innerHTML = logs.length
-        ? logs.map(item => `<div class="log-line"><span class="log-file">[${escapeHtml(item.file)}]</span>${escapeHtml(item.line)}</div>`).join('')
+        ? logs.slice().reverse().map(item => `<div class="log-line"><span class="log-file">[${escapeHtml(item.file)}]</span>${escapeHtml(item.line)}</div>`).join('')
         : '<div class="empty">暂无日志</div>';
 
       if (!state.dirty) {
-        state.accounts = Array.isArray(data.accounts?.accounts) ? data.accounts.accounts : state.accounts;
+        const serverAccounts = Array.isArray(data.accounts?.accounts) ? data.accounts.accounts : [];
+        if (serverAccounts.length > 0) {
+          // 保留前端已有的 cookie 字段，避免服务端 masked 响应覆盖用户输入
+          for (let i = 0; i < serverAccounts.length; i++) {
+            const existing = state.accounts[i];
+            if (existing && existing.cookie) {
+              serverAccounts[i].cookie = existing.cookie;
+            }
+          }
+          state.accounts = serverAccounts;
+        }
         ensureSelectedAccount();
         state.accountsPath = data.accounts?.path || state.accountsPath;
         $('accountsPath').textContent = state.accountsPath || 'accounts.json';
         renderAccountEditor();
       }
+      } finally { state.refreshing = false; }
     }
 
     $('refreshBtn').addEventListener('click', refreshAll);
@@ -854,7 +870,7 @@
     $('copyLogsBtn').addEventListener('click', () => copyText(state.lastLogsText || '暂无日志', '已复制日志'));
     $('startBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在启动后台同步服务...'; await postJson('/api/control/start'); await refreshAll(); });
     $('stopBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在停止后台同步服务...'; await postJson('/api/control/stop'); await refreshAll(); });
-    $('retryBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在重试后台同步服务...'; await postJson('/api/control/retry'); await refreshAll(); });
+    $('retryBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在重启后台同步服务...'; await postJson('/api/control/restart'); await refreshAll(); });
     $('appStartBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在一键启动全部服务...'; await postJson('/api/control/all/start'); await refreshAll(); });
     $('appStopBtn').addEventListener('click', async () => { $('controlTip').textContent = '正在停止后台 App...'; await postJson('/api/control/app/stop'); await refreshAll(); });
     $('addAccountBtn').addEventListener('click', () => {

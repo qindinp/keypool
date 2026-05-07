@@ -145,7 +145,12 @@ function stop() {
     try { process.kill(pid, 'SIGTERM'); } catch {}
   }
 
-  clearMeta();
+  // 延迟清理 PID 文件，给进程退出留时间
+  // 避免 status 查询在进程实际退出前误报 "未运行"
+  setTimeout(() => {
+    try { if (!isPidAlive(pid)) clearMeta(); } catch {}
+  }, 2000);
+
   console.log(JSON.stringify({ ok: true, alreadyStopped: false, pid }, null, 2));
 }
 
