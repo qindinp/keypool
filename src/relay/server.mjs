@@ -181,19 +181,22 @@ async function handleStreamProxy(req, res, path, body) {
         headers: {
           authorization: req.headers.authorization || '',
         },
-        onResponse: async (upstreamRes, upstreamReq) => {
+        onResponse: (upstreamRes, upstreamReq) => {
           const statusCode = upstreamRes.statusCode || 502;
 
           if (statusCode >= 500) {
             let errorBody = '';
-            for await (const chunk of upstreamRes) errorBody += chunk;
-            registry.markFailure(upstream.accountId, `upstream ${statusCode}`, { statusCode });
-            attempts.push({
-              accountId: upstream.accountId,
-              baseUrl: upstream.baseUrl,
-              statusCode,
-              error: errorBody || `upstream ${statusCode}`,
+            upstreamRes.on('data', c => { errorBody += c.toString(); });
+            upstreamRes.on('end', () => {
+              registry.markFailure(upstream.accountId, `upstream ${statusCode}`, { statusCode });
+              attempts.push({
+                accountId: upstream.accountId,
+                baseUrl: upstream.baseUrl,
+                statusCode,
+                error: errorBody || `upstream ${statusCode}`,
+              });
             });
+            upstreamRes.on('error', () => {});
             return;
           }
 

@@ -312,7 +312,11 @@ class MiMoGateway {
   async chat(sessionKey, message) {
     this.streamHandler = () => {}; // active marker
     return new Promise(async (resolve, reject) => {
-      const timeout = setTimeout(() => { this.streamHandler = null; reject(new Error('chat timeout')); }, 120000);
+      const timeout = setTimeout(() => {
+        this.streamHandler = null;
+        this._pendingChatResolve = null;
+        reject(new Error('chat timeout'));
+      }, 120000);
 
       // Wait for chat final event
       this._pendingChatResolve = async (payload) => {

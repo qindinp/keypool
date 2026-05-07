@@ -77,12 +77,16 @@ export class KeyPool {
       }
       keyEntry.enabled = false;
       this._log('warn', `Key ${keyEntry.id} disabled (${statusCode}). Will retry later.`);
-    } else if (statusCode >= 500 && keyEntry.errorCount >= 3) {
-      if (keyEntry.enabled) {
-        keyEntry.recoverFailures = (keyEntry.recoverFailures || 0) + 1;
+    } else if (statusCode >= 500) {
+      // 5xx 错误：连续失败或恢复后再失败时加速禁用
+      const effectiveFailures = keyEntry.errorCount + (keyEntry.recoverFailures || 0);
+      if (effectiveFailures >= 3) {
+        if (keyEntry.enabled) {
+          keyEntry.recoverFailures = (keyEntry.recoverFailures || 0) + 1;
+        }
+        keyEntry.enabled = false;
+        this._log('warn', `Key ${keyEntry.id} disabled after ${keyEntry.errorCount} errors (recoverFailures: ${keyEntry.recoverFailures}).`);
       }
-      keyEntry.enabled = false;
-      this._log('warn', `Key ${keyEntry.id} disabled after ${keyEntry.errorCount} consecutive server errors.`);
     }
   }
 

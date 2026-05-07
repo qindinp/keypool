@@ -18,6 +18,7 @@ const PROXY_TIMEOUT_MS = 120_000;         // 2 分钟
 function copySuccessHeaders(proxyRes) {
   const headers = { ...proxyRes.headers };
   delete headers['content-length'];
+  delete headers['transfer-encoding'];
   return headers;
 }
 
@@ -187,17 +188,19 @@ export function proxyRequest(opts) {
       upstream.on('data', (chunk) => {
         if (!headersSent) {
           // 检查第一个 chunk 中是否包含错误 SSE 事件
-          const text = lineBuf.toString() + chunk.toString();
-          lineBuf = Buffer.alloc(0);
-          const firstNewline = text.indexOf('\n');
-          if (firstNewline === -1) {
-            lineBuf = Buffer.from(text);
+          lineBuf = Buffer.concat([lineBuf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+          const nlIdx = lineBuf.indexOf(0x0A); // '\n'
+          if (nlIdx === -1) {
+            // 还没有完整行，继续缓冲
             return;
           }
-          // 检查是否是 error event
-          const firstLine = text.slice(0, firstNewline).trim();
+          // 取第一行（用 UTF-8 安全转换）
+          const firstLine = lineBuf.slice(0, nlIdx).toString('utf-8').trim();
+          const restBuf = lineBuf.slice(nlIdx + 1);
+          lineBuf = Buffer.alloc(0);
+
           if (firstLine.startsWith('event: error')) {
-            let errBody = text;
+            let errBody = firstLine + '\n';
             upstream.on('data', (c) => { errBody += c.toString(); });
             upstream.on('end', () => {
               pool.markError(keyEntry, statusCode, errBody);
@@ -219,12 +222,11 @@ export function proxyRequest(opts) {
           // 正常流式数据，发送 header
           headersSent = true;
           res.writeHead(statusCode, copySuccessHeaders(proxyRes));
-          // 处理已缓冲的数据
-          res.write(chunk);
-          // 用 Buffer 拼接处理 UTF-8 边界
-          lineBuf = Buffer.from(text);
-          processStreamData(lineBuf, false);
-          lineBuf = Buffer.alloc(0);
+          // 处理已缓冲的数据（restBuf 是第一行之后的剩余数据）
+          if (restBuf.length > 0) {
+            res.write(restBuf);
+            processStreamData(restBuf, false);
+          }
         } else {
           res.write(chunk);
           processStreamData(chunk, true);

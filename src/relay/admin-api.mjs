@@ -249,8 +249,8 @@ export function createAdminApi(deps) {
     } else if (action === 'recover') {
       const recovered = await runtime.worker.recoverAvailableInstance();
       if (!recovered?.success) {
-        const detail = recovered?.invalidShareUrl
-          ? `原地恢复拿到了失效 tunnel 地址: ${recovered.invalidShareUrl}`
+        const detail = recovered?.shareUrl
+          ? `原地恢复拿到了 tunnel 地址 ${recovered.shareUrl}，但健康检查未通过`
           : '原地恢复未拿到可确认的可用分享地址';
         throw new Error(detail);
       }

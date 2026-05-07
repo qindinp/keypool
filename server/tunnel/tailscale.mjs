@@ -3,7 +3,7 @@
  * 通过 tailscale serve + funnel 暴露本地端口到公网
  */
 
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
 const HEALTH_RECHECK_INTERVAL_MS = 120_000;
@@ -16,10 +16,10 @@ function sleep(ms) {
 
 function run(cmd, args = [], opts = {}) {
   try {
-    const result = execSync(`${cmd} ${args.join(' ')}`, {
+    const result = execFileSync(cmd, args, {
       encoding: 'utf-8',
       timeout: opts.timeout || 15_000,
-      ...opts,
+      stdio: 'pipe',
     });
     return { ok: true, stdout: result.trim(), stderr: '' };
   } catch (e) {

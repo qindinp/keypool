@@ -341,9 +341,11 @@ export function openAIChunkToAnthropicEvents(chunk, state) {
     if (state.textStarted && !state.textClosed) {
       state.textClosed = true;
       events.push({ type: 'content_block_stop', index: state.blockIndex });
+      state.blockIndex++;
     } else if (state.thinkingStarted && !state.thinkingClosed) {
       state.thinkingClosed = true;
       events.push({ type: 'content_block_stop', index: state.blockIndex });
+      state.blockIndex++;
     }
     // 关闭 tool_use blocks
     const toolStart = state.toolBlockStart ?? state.blockIndex;
@@ -572,8 +574,10 @@ export function proxyAnthropicStream(keyEntry, openaiReq, model, res, pool, log,
     pool.markError(keyEntry, 0, err.message);
     log('error', `Anthropic stream proxy error [${keyEntry.id}]: ${err.message}`);
     if (!res.headersSent) {
-      res.write(`event: error\ndata: ${JSON.stringify(event)}\n\n`);
+      res.writeHead(200, streamHeaders);
     }
+    const errorEvent = { type: 'error', error: { type: 'proxy_error', message: err.message } };
+    res.write(`event: error\ndata: ${JSON.stringify(errorEvent)}\n\n`);
     res.end();
   });
 
