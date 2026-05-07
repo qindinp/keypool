@@ -90,11 +90,40 @@ async function syncRegistryForRuntime(rt, registry) {
 
   const shareUrl = state.currentShareUrl || null;
   const tailnetUrl = state.currentTailnetUrl || null;
+  const tailnetIpUrl = state.currentTailnetIpUrl || null;
   const localUrl = state.currentLocalUrl || 'http://127.0.0.1:9200';
 
-  // 选择最佳 baseUrl：先试 tailnetUrl，不可达则降级到 shareUrl
+  // 选择最佳 baseUrl：先试 tailnetIpUrl，再试 tailnetUrl，不可达再降级到 shareUrl
   let baseUrl = null;
-  if (tailnetUrl) {
+  if (tailnetIpUrl) {
+    const tailnetIpHealth = await computeEndpointHealth(tailnetIpUrl);
+    if (tailnetIpHealth.healthy) {
+      baseUrl = tailnetIpUrl;
+    } else if (tailnetUrl) {
+      const tailnetHealth = await computeEndpointHealth(tailnetUrl);
+      if (tailnetHealth.healthy) {
+        baseUrl = tailnetUrl;
+      } else if (shareUrl) {
+        const shareHealth = await computeEndpointHealth(shareUrl);
+        if (shareHealth.healthy) {
+          baseUrl = shareUrl;
+        } else {
+          baseUrl = tailnetIpUrl;
+        }
+      } else {
+        baseUrl = tailnetIpUrl;
+      }
+    } else if (shareUrl) {
+      const shareHealth = await computeEndpointHealth(shareUrl);
+      if (shareHealth.healthy) {
+        baseUrl = shareUrl;
+      } else {
+        baseUrl = tailnetIpUrl;
+      }
+    } else {
+      baseUrl = tailnetIpUrl;
+    }
+  } else if (tailnetUrl) {
     const tailnetHealth = await computeEndpointHealth(tailnetUrl);
     if (tailnetHealth.healthy) {
       baseUrl = tailnetUrl;
@@ -125,6 +154,7 @@ async function syncRegistryForRuntime(rt, registry) {
     baseUrl,
     shareUrl,
     tailnetUrl,
+    tailnetIpUrl,
     localUrl,
     healthy,
     priority: rt.account.priority,

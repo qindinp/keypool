@@ -82,6 +82,7 @@ export function createAdminApi(deps) {
         accountId: name.replace(/\.state\.json$/i, ''),
         currentShareUrl: state?.currentShareUrl || null,
         currentTailnetUrl: state?.currentTailnetUrl || null,
+        currentTailnetIpUrl: state?.currentTailnetIpUrl || null,
         currentLocalUrl: state?.currentLocalUrl || null,
         deployCount: state?.deployCount || 0,
         lastDeployAt: state?.lastDeployAt || null,
@@ -257,6 +258,8 @@ export function createAdminApi(deps) {
 
       const state = runtime.stateStore.loadState();
       state.currentShareUrl = recovered.shareUrl || state.currentShareUrl || null;
+      state.currentTailnetUrl = recovered.tailnetUrl || state.currentTailnetUrl || null;
+      state.currentTailnetIpUrl = recovered.tailnetIpUrl || state.currentTailnetIpUrl || null;
       state.currentLocalUrl = recovered.localUrl || state.currentLocalUrl || 'http://127.0.0.1:9200';
       state.lastHealthError = null;
       state.history = state.history || [];
@@ -266,6 +269,8 @@ export function createAdminApi(deps) {
         expireTime: state.lastExpireTime || null,
         key: null,
         shareUrl: state.currentShareUrl,
+        tailnetUrl: state.currentTailnetUrl || null,
+        tailnetIpUrl: state.currentTailnetIpUrl || null,
         localUrl: state.currentLocalUrl,
         success: true,
       });
@@ -280,16 +285,21 @@ export function createAdminApi(deps) {
         expireTime = status.expireTime || expireTime;
       } catch {}
 
-      const endpointHealth = await probeHealth({ baseUrl: state.currentShareUrl, timeoutMs: 15_000 });
+      const endpointBaseUrl = state.currentTailnetIpUrl || state.currentTailnetUrl || state.currentShareUrl;
+      const endpointHealth = endpointBaseUrl
+        ? await probeHealth({ baseUrl: endpointBaseUrl, timeoutMs: 15_000 })
+        : { ok: false, statusCode: 0, error: 'missing baseUrl' };
       registry.upsert({
         accountId: account.id,
         accountName: account.name,
         userId: auth.userId || null,
         userName: auth.userName || null,
-        baseUrl: state.currentShareUrl || null,
+        baseUrl: endpointBaseUrl || null,
         shareUrl: state.currentShareUrl || null,
+        tailnetUrl: state.currentTailnetUrl || null,
+        tailnetIpUrl: state.currentTailnetIpUrl || null,
         localUrl: state.currentLocalUrl || 'http://127.0.0.1:9200',
-        healthy: Boolean(state.currentShareUrl) && endpointHealth.ok,
+        healthy: Boolean(endpointBaseUrl) && endpointHealth.ok,
         priority: account.priority,
         tags: account.tags || [],
         instanceStatus,
