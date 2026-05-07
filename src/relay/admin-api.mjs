@@ -318,10 +318,13 @@ export function createAdminApi(deps) {
   function buildOverview() {
     const registryData = registry.load();
     const upstreams = Array.isArray(registryData.upstreams) ? registryData.upstreams : [];
+    const now = Date.now();
     const healthyUpstreams = upstreams.filter((u) => u.healthy === true);
     const missingShareUrl = upstreams.filter((u) => !u.shareUrl).length;
     const availableInstances = upstreams.filter((u) => u.instanceStatus === 'AVAILABLE').length;
     const degradedUpstreams = upstreams.filter((u) => !u.healthy && u.instanceStatus === 'AVAILABLE').length;
+    const rateLimitedUpstreams = upstreams.filter((u) => u.rateLimitedUntil && u.rateLimitedUntil > now).length;
+    const coolingDownUpstreams = upstreams.filter((u) => u.cooldownUntil && u.cooldownUntil > now && (!u.rateLimitedUntil || u.rateLimitedUntil <= now)).length;
     const states = loadAccountStates();
     const accountsConfig = loadAccountsConfigForClient();
 
@@ -347,6 +350,8 @@ export function createAdminApi(deps) {
         healthyUpstreams: healthyUpstreams.length,
         availableInstances,
         degradedUpstreams,
+        rateLimitedUpstreams,
+        coolingDownUpstreams,
         missingShareUrl,
         primaryAccountName: upstreams[0]?.accountName || upstreams[0]?.accountId || null,
         updatedAt: registryData.updatedAt || null,

@@ -124,6 +124,7 @@ function bindClientAbort(req) {
 
 async function forwardViaUpstream(upstream, req, path, body, onAbort) {
   registry.markInflight(upstream.accountId, 1);
+  const startMs = Date.now();
   try {
     const result = await proxyJson({
       baseUrl: upstream.baseUrl,
@@ -136,13 +137,21 @@ async function forwardViaUpstream(upstream, req, path, body, onAbort) {
       },
     });
 
+    const responseMs = Date.now() - startMs;
+
+    if (result.statusCode === 429) {
+      // 429 限流：标记为限流状态，跳过但不视为严重故障
+      registry.markFailure(upstream.accountId, 'rate limited (429)', { statusCode: 429 });
+      return { ok: false, retryable: true, upstream, result, rateLimited: true };
+    }
+
     if (result.statusCode >= 500) {
       registry.markFailure(upstream.accountId, `upstream ${result.statusCode}`, { statusCode: result.statusCode });
       return { ok: false, retryable: true, upstream, result };
     }
 
-    registry.markSuccess(upstream.accountId, { lastStatusCode: result.statusCode });
-    return { ok: true, upstream, result };
+    registry.markSuccess(upstream.accountId, { lastStatusCode: result.statusCode, responseMs });
+    return { ok: true, upstream, result, responseMs };
   } catch (e) {
     if (isClientAbortError(e)) {
       return { ok: false, retryable: false, upstream, error: e, aborted: true };
@@ -183,6 +192,24 @@ async function handleStreamProxy(req, res, path, body) {
         onResponse: (upstreamRes, upstreamReq) => {
           const statusCode = upstreamRes.statusCode || 502;
 
+          // 429 限流：不消费响应，让外层 fallback 到下一个 upstream
+          if (statusCode === 429) {
+            let errorBody = '';
+            upstreamRes.on('data', c => { errorBody += c.toString(); });
+            upstreamRes.on('end', () => {
+              registry.markFailure(upstream.accountId, 'rate limited (429)', { statusCode: 429 });
+              attempts.push({
+                accountId: upstream.accountId,
+                baseUrl: upstream.baseUrl,
+                statusCode: 429,
+                error: 'rate limited',
+                rateLimited: true,
+              });
+            });
+            upstreamRes.on('error', () => {});
+            return;
+          }
+
           if (statusCode >= 500) {
             let errorBody = '';
             upstreamRes.on('data', c => { errorBody += c.toString(); });
@@ -202,9 +229,10 @@ async function handleStreamProxy(req, res, path, body) {
           responseStarted = true;
           registry.markSuccess(upstream.accountId, { lastStatusCode: statusCode });
 
-          // 设置响应头，添加 X-KeyPool-Upstream 标识实际来源
+          // 设置响应头，添加诊断头标识实际来源和尝试次数
           const respHeaders = passthroughHeaders(upstreamRes.headers);
           respHeaders['x-keypool-upstream'] = upstream.accountId || 'unknown';
+          respHeaders['x-keypool-attempt'] = String(i + 1);
           res.writeHead(statusCode, respHeaders);
 
           onAbort(() => {
@@ -276,11 +304,14 @@ async function handleProxy(req, res, path) {
 
   const onAbort = bindClientAbort(req);
   const attempts = [];
-  for (const upstream of upstreams) {
+  for (let i = 0; i < upstreams.length; i++) {
+    const upstream = upstreams[i];
     const forwarded = await forwardViaUpstream(upstream, req, path, body, onAbort);
     if (forwarded.ok) {
       const respHeaders = passthroughHeaders(forwarded.result.headers);
       respHeaders['x-keypool-upstream'] = upstream.accountId || 'unknown';
+      respHeaders['x-keypool-attempt'] = String(i + 1);
+      if (forwarded.responseMs) respHeaders['x-keypool-response-ms'] = String(forwarded.responseMs);
       res.writeHead(forwarded.result.statusCode, respHeaders);
       res.end(forwarded.result.body);
       return;
@@ -296,6 +327,7 @@ async function handleProxy(req, res, path) {
       baseUrl: upstream.baseUrl,
       statusCode: forwarded.result?.statusCode || 0,
       error: forwarded.error?.message || null,
+      rateLimited: forwarded.rateLimited || false,
     });
 
     if (!forwarded.retryable) break;
@@ -328,11 +360,17 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === '/health') {
       const data = registry.load();
-      const healthy = (data.upstreams || []).filter(u => u.healthy).length;
+      const upstreams = data.upstreams || [];
+      const now = Date.now();
+      const healthy = upstreams.filter(u => u.healthy).length;
+      const rateLimited = upstreams.filter(u => u.rateLimitedUntil && u.rateLimitedUntil > now).length;
+      const coolingDown = upstreams.filter(u => u.cooldownUntil && u.cooldownUntil > now && (!u.rateLimitedUntil || u.rateLimitedUntil <= now)).length;
       return sendJson(res, healthy > 0 ? 200 : 503, {
         ok: healthy > 0,
         healthyUpstreams: healthy,
-        totalUpstreams: (data.upstreams || []).length,
+        rateLimitedUpstreams: rateLimited,
+        coolingDownUpstreams: coolingDown,
+        totalUpstreams: upstreams.length,
         updatedAt: data.updatedAt,
       });
     }
