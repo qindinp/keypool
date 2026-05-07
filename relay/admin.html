@@ -177,7 +177,7 @@
       <div class="card"><div class="metric-label">限流中</div><div class="metric-value" id="rateLimitedCount">-</div></div>
       <div class="card"><div class="metric-label">冷却中</div><div class="metric-value" id="coolingDownCount">-</div></div>
       <div class="card"><div class="metric-label">异常连接</div><div class="metric-value" id="degradedCount">-</div></div>
-      <div class="card"><div class="metric-label">缺失分享地址</div><div class="metric-value" id="missingShareUrlCount">-</div></div>
+      <div class="card"><div class="metric-label">缺失内网直连地址</div><div class="metric-value" id="missingTailnetIpCount">-</div></div>
     </div>
 
     <div class="section-title">
@@ -316,14 +316,15 @@
         .replace(/'/g, '&#39;');
     }
     function statusBadge(u) {
-      if (u.healthy === true) return { cls: 'ok', text: '可用' };
+      if (u.healthy === true) return { cls: 'ok', text: 'HTTP 健康' };
       if (u.rateLimitedUntil && u.rateLimitedUntil > Date.now()) return { cls: 'warn', text: '限流中' };
-      if (u.instanceStatus === 'AVAILABLE' && !u.shareUrl) return { cls: 'warn', text: '缺少分享地址' };
-      if (u.instanceStatus === 'AVAILABLE') return { cls: 'warn', text: '恢复中' };
+      if (u.instanceStatus === 'AVAILABLE' && !u.tailnetIpUrl) return { cls: 'warn', text: '缺少内网直连地址' };
+      if (u.instanceStatus === 'AVAILABLE') return { cls: 'warn', text: '实例可用 / 内网异常' };
       return { cls: 'bad', text: u.instanceStatus || '异常' };
     }
     function renewalBadge(item) {
-      if (item?.success && item?.shareUrl) return 'ok';
+      if (item?.success && item?.tailnetIpUrl) return 'ok';
+      if (item?.success && item?.tailnetUrl) return 'warn';
       if (item?.success) return 'warn';
       return 'bad';
     }
@@ -384,8 +385,10 @@
           </div>
           <div class="kv">
             <div class="k">实例状态</div><div class="v">${escapeHtml(u.instanceStatus || '-')}</div>
-            <div class="k">当前入口</div><div class="v mono">${u.baseUrl ? `<a href="${escapeHtml(u.baseUrl)}" target="_blank">${escapeHtml(u.baseUrl)}</a>` : '-'}</div>
-            <div class="k">分享地址</div><div class="v mono">${u.shareUrl ? `<a href="${escapeHtml(u.shareUrl)}" target="_blank">${escapeHtml(u.shareUrl)}</a>` : '-'}</div>
+            <div class="k">内网主入口</div><div class="v mono">${u.baseUrl ? `<a href="${escapeHtml(u.baseUrl)}" target="_blank">${escapeHtml(u.baseUrl)}</a>` : '-'}</div>
+            <div class="k">内网直连地址</div><div class="v mono">${u.tailnetIpUrl ? `<a href="${escapeHtml(u.tailnetIpUrl)}" target="_blank">${escapeHtml(u.tailnetIpUrl)}</a>` : '-'}</div>
+            <div class="k">内网域名地址</div><div class="v mono">${u.tailnetUrl ? `<a href="${escapeHtml(u.tailnetUrl)}" target="_blank">${escapeHtml(u.tailnetUrl)}</a>` : '-'}</div>
+            <div class="k">公网附带地址</div><div class="v mono">${u.shareUrl ? `<a href="${escapeHtml(u.shareUrl)}" target="_blank">${escapeHtml(u.shareUrl)}</a>` : '-'}</div>
             <div class="k">本地地址</div><div class="v mono">${u.localUrl ? `<a href="${escapeHtml(u.localUrl)}" target="_blank">${escapeHtml(u.localUrl)}</a>` : '-'}</div>
             <div class="k">到期时间</div><div class="v">${escapeHtml(expire)}</div>
             <div class="k">上次部署</div><div class="v">${escapeHtml(lastDeploy)}</div>
@@ -410,7 +413,9 @@
           <div><strong>${escapeHtml(item.reason || 'unknown')}</strong></div>
           <div class="muted">${escapeHtml(fmtTime(item.at))}</div>
           <div>结果:${item.success ? '成功' : '失败'}</div>
-          <div class="mono">shareUrl: ${escapeHtml(item.shareUrl || '未获取到')}</div>
+          <div class="mono">tailnetIpUrl: ${escapeHtml(item.tailnetIpUrl || '未获取到')}</div>
+          <div class="mono">tailnetUrl: ${escapeHtml(item.tailnetUrl || '-')}</div>
+          <div class="mono">shareUrl(附带): ${escapeHtml(item.shareUrl || '-')}</div>
           <div class="mono">localUrl: ${escapeHtml(item.localUrl || '-')}</div>
         </div>`;
     }
@@ -760,11 +765,15 @@
           if (action === 'destroy') {
             summary = '实例已请求销毁,稍后刷新可看到最新状态';
           } else if (result.body?.state?.currentShareUrl) {
-            summary = `已获取分享地址 ${result.body.state.currentShareUrl}`;
+            summary = `已获取内网直连地址 ${result.body.state.currentTailnetIpUrl}`;
+          } else if (result.body?.state?.currentTailnetUrl) {
+            summary = `已获取内网域名地址 ${result.body.state.currentTailnetUrl}`;
+          } else if (result.body?.state?.currentShareUrl) {
+            summary = `已记录公网附带地址 ${result.body.state.currentShareUrl}`;
           } else if (result.body?.state?.currentLocalUrl) {
             summary = `本地地址 ${result.body.state.currentLocalUrl}`;
           }
-          const kind = action === 'destroy' ? 'warn' : (result.body?.state?.currentShareUrl ? 'ok' : 'warn');
+          const kind = action === 'destroy' ? 'warn' : (result.body?.state?.currentTailnetIpUrl ? 'ok' : 'warn');
           setActionStatus(accountId, kind, `${actionText} 完成:${summary}`);
           $('controlTip').textContent = `${accountId} ${actionText}完成`;
         }
@@ -804,7 +813,7 @@
         $('appStatus').textContent = appControl.body?.running ? '常驻中' : '未启动';
         $('healthyCount').textContent = '0';
         $('degradedCount').textContent = '0';
-        $('missingShareUrlCount').textContent = '0';
+        $('missingTailnetIpCount').textContent = '0';
         $('primaryName').textContent = '-';
         $('updatedAt').textContent = '-';
         $('listMeta').textContent = '读取总览失败';
@@ -827,7 +836,7 @@
       $('rateLimitedCount') && ($('rateLimitedCount').textContent = String(data.summary?.rateLimitedUpstreams ?? 0));
       $('coolingDownCount') && ($('coolingDownCount').textContent = String(data.summary?.coolingDownUpstreams ?? 0));
       $('degradedCount').textContent = String(data.summary?.degradedUpstreams ?? 0);
-      $('missingShareUrlCount').textContent = String(data.summary?.missingShareUrl ?? 0);
+      $('missingTailnetIpCount').textContent = String(data.summary?.missingTailnetIpUrl ?? 0);
       $('primaryName').textContent = data.summary?.primaryAccountName || '-';
       $('updatedAt').textContent = fmtTime(data.summary?.updatedAt);
       $('listMeta').textContent = `共 ${data.summary?.totalUpstreams ?? upstreams.length} 个实例节点`;
