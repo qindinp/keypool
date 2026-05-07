@@ -44,6 +44,10 @@ async function probePublicHealth(baseUrl, timeoutMs = 10_000) {
   }
 }
 
+async function probeLocalHealth(port, timeoutMs = 10_000) {
+  return probePublicHealth(`http://127.0.0.1:${port}`, timeoutMs);
+}
+
 async function waitForHealthyPublicUrl(publicUrl, log, maxAttempts = 5, delayMs = 3_000) {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const result = await probePublicHealth(publicUrl, 10_000);
@@ -295,8 +299,13 @@ export async function startTailscaleFunnel(port, opts, state) {
     if (!result.ok) {
       state.incHealthFailures();
       if (state.getHealthFailures() >= CONSECUTIVE_FAILURES_THRESHOLD) {
+        const localHealth = await probeLocalHealth(port, 10_000);
         state.resetHealthFailures();
-        log('warn', `隧道健康检查连续 ${CONSECUTIVE_FAILURES_THRESHOLD} 次失败，尝试重建...`);
+        if (localHealth.ok) {
+          log('warn', `隧道健康检查连续 ${CONSECUTIVE_FAILURES_THRESHOLD} 次失败，但本地服务健康；跳过 Funnel 重建，仅等待后续复检`);
+          return;
+        }
+        log('warn', `隧道健康检查连续 ${CONSECUTIVE_FAILURES_THRESHOLD} 次失败，且本地服务异常，尝试重建...`);
         stopTailscaleFunnel(port);
         stopTailscaleServe(port);
         await sleep(2_000);

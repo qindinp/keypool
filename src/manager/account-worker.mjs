@@ -83,6 +83,11 @@ async function probeShareUrlWithRetry({ shareUrl, timeoutMs = 15_000, retries = 
   return lastHealth;
 }
 
+async function probeLocalUrl(baseUrl, timeoutMs = 10_000) {
+  const target = baseUrl || 'http://127.0.0.1:9200';
+  return probeHealth({ baseUrl: target, timeoutMs });
+}
+
 
 export function createAccountWorker({ cookie, config, api, stateStore, log }) {
   async function waitForReady() {
@@ -538,12 +543,17 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
           log('warn', '实例已可用但尚未完成部署，尝试自动部署');
           await renewFlow('available-but-not-deployed');
         } else if (currentStatus === 'AVAILABLE' && currentShareUrl) {
-          const health = await probeHealth({ baseUrl: currentShareUrl, timeoutMs: 15_000 });
-          endpointUnhealthy = !health.ok;
-          endpointError = health.error || `health ${health.statusCode}`;
-          if (endpointUnhealthy) {
-            log('warn', `分享地址健康检查失败 (${endpointError})，先尝试实例内原地恢复`);
-            state.lastHealthError = endpointError;
+          const localBaseUrl = currentLocalUrl || 'http://127.0.0.1:9200';
+          const localHealth = await probeLocalUrl(localBaseUrl, 10_000);
+          const shareHealth = await probeHealth({ baseUrl: currentShareUrl, timeoutMs: 15_000 });
+          const localUnhealthy = !localHealth.ok;
+          endpointUnhealthy = !shareHealth.ok;
+          endpointError = shareHealth.error || `health ${shareHealth.statusCode}`;
+
+          if (localUnhealthy) {
+            const localError = localHealth.error || `health ${localHealth.statusCode}`;
+            log('warn', `本地服务健康检查失败 (${localError})，先尝试实例内原地恢复`);
+            state.lastHealthError = `local:${localError}`;
             stateStore.saveState(state, log);
 
             const recovered = await recoverAvailableInstance();
@@ -561,8 +571,13 @@ export function createAccountWorker({ cookie, config, api, stateStore, log }) {
               state.currentShareUrl = null;
               stateStore.saveState(state, log);
               log('warn', '实例原地恢复失败，已清除失效分享地址，回退到完整续期/重部署流程');
-              await renewFlow('available-but-unhealthy');
+              await renewFlow('available-but-local-unhealthy');
             }
+          } else if (endpointUnhealthy) {
+            log('warn', `本地服务正常，但分享地址健康检查失败 (${endpointError})；跳过恢复/重部署，仅保留地址等待后续复检`);
+            state.lastHealthError = `share:${endpointError}`;
+            state.currentLocalUrl = localBaseUrl;
+            stateStore.saveState(state, log);
           } else if (state.lastHealthError) {
             state.lastHealthError = null;
             stateStore.saveState(state, log);
