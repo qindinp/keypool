@@ -15,9 +15,38 @@
  */
 
 import { WebSocketServer } from 'ws';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { resolve, join, relative, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SKILL_ROOT = resolve(__dirname, '..', '..', 'skill');
 
 const HEARTBEAT_INTERVAL = 30_000;
 const HEARTBEAT_TIMEOUT = 10_000;
+
+/**
+ * 递归读取 skill 目录中的所有文件
+ * @returns {Array<{path: string, content: string}>}
+ */
+function readSkillFiles() {
+  const files = [];
+  function walk(dir, base) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, base);
+      } else if (entry.isFile() && (entry.name.endsWith('.mjs') || entry.name.endsWith('.md') || entry.name.endsWith('.json'))) {
+        files.push({
+          path: relative(base, full),
+          content: readFileSync(full, 'utf-8'),
+        });
+      }
+    }
+  }
+  walk(SKILL_ROOT, SKILL_ROOT);
+  return files;
+}
 
 /**
  * 创建 Tunnel WebSocket 服务
@@ -35,8 +64,27 @@ export function createTunnelServer(registry) {
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://localhost');
+    const isBootstrap = url.searchParams.get('bootstrap') === '1';
     const accountId = url.searchParams.get('accountId') || 'unknown';
     const runId = url.searchParams.get('runId') || '';
+
+    // ─── Bootstrap 模式：推送 skill 文件 ──────────────────
+    if (isBootstrap) {
+      console.log(`🚀 [bootstrap] 远端请求 bootstrap accountId=${accountId}`);
+      try {
+        const files = readSkillFiles();
+        for (const f of files) {
+          ws.send(JSON.stringify({ type: 'file', path: f.path, content: f.content }));
+        }
+        ws.send(JSON.stringify({ type: 'done', totalFiles: files.length }));
+        console.log(`✅ [bootstrap] 推送 ${files.length} 个文件完成`);
+      } catch (err) {
+        console.error(`❌ [bootstrap] 推送失败: ${err.message}`);
+        ws.send(JSON.stringify({ type: 'error', message: err.message }));
+      }
+      ws.close();
+      return;
+    }
 
     console.log(`🔗 [tunnel] 远端连接 accountId=${accountId} runId=${runId}`);
 

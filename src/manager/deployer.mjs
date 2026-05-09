@@ -37,6 +37,9 @@ const SKILL_FILES = [
   'scripts/lib/api-handler.mjs',
 ];
 
+// Bootstrap 源文件路径
+const BOOTSTRAP_SRC = resolve(__dirname, '..', '..', 'skill', 'bootstrap.mjs');
+
 // 拒绝识别模式
 const REFUSE_PATTERNS = [
   /拒绝执行/i,
@@ -354,6 +357,37 @@ function buildStartProxyPrompt(marker, scriptDir, fallback = false) {
   ].join('\n');
 }
 
+/**
+ * 构建 Bootstrap 部署 prompt
+ *
+ * 单条 prompt，~3KB，完全在 WS 帧限制内。
+ * Bootstrap 通过内置 WebSocket 从 Gateway 拉取完整 skill 代码并启动。
+ *
+ * @param {object} vars - 模板变量 { KEYPOOL_GATEWAY_URL, KEYPOOL_ACCOUNT_ID, KEYPOOL_RUN_ID }
+ * @param {string} marker - 成功标记
+ * @returns {string} 部署 prompt
+ */
+function buildBootstrapPrompt(vars, marker) {
+  // 读取 bootstrap 模板并替换变量
+  let bootstrapCode = readFileSync(BOOTSTRAP_SRC, 'utf-8');
+  for (const [key, value] of Object.entries(vars)) {
+    bootstrapCode = bootstrapCode.replaceAll(`__${key}__`, value);
+  }
+
+  return [
+    '请执行以下脚本完成 KeyPool Tunnel Proxy 部署：',
+    '',
+    '```bash',
+    `cat > /tmp/keypool-bootstrap.mjs << 'BOOTSTRAP_EOF'`,
+    bootstrapCode,
+    'BOOTSTRAP_EOF',
+    'node /tmp/keypool-bootstrap.mjs',
+    '```',
+    '',
+    `成功回复 ${marker}。失败回复实际错误。`,
+  ].join('\n');
+}
+
 export function createDeployer(config) {
   const api = createMimoApi({ sleep });
   let deployQueue = Promise.resolve();
@@ -384,13 +418,6 @@ export function createDeployer(config) {
 
       const markers = buildStageMarkers(account.id);
       const gatewayWsUrl = config.gatewayUrl || `ws://127.0.0.1:${process.env.PORT || 9300}/tunnel`;
-
-      // 读取 skill 文件并替换模板变量
-      const files = readSkillFiles({
-        KEYPOOL_GATEWAY_URL: gatewayWsUrl,
-        KEYPOOL_ACCOUNT_ID: account.id,
-        KEYPOOL_RUN_ID: markers.runId,
-      });
 
       const result = {
         ok: false,
@@ -425,181 +452,44 @@ export function createDeployer(config) {
         markStage('connect', 'ok');
         log('ok', '已连接到沙箱');
 
-        // 阶段 2: 创建 skill + 写入文件
-        const totalSize = files.reduce((s, f) => s + f.content.length, 0);
-        log('info', `创建 tunnel proxy skill (${files.length} files, ${totalSize} bytes)...`);
-        markStage('create', 'running');
+        // 阶段 2: Bootstrap 部署（单条 prompt，~3KB）
+        log('info', 'Bootstrap 部署：发送 bootstrap 脚本...');
+        markStage('bootstrap', 'running');
 
-        // 判断是否需要分块写入
-        const singlePrompt = buildCreateSkillPrompt(files, markers.create, SKILL_DIR, SCRIPT_DIR);
+        const bootstrapPrompt = buildBootstrapPrompt({
+          KEYPOOL_GATEWAY_URL: gatewayWsUrl,
+          KEYPOOL_ACCOUNT_ID: account.id,
+          KEYPOOL_RUN_ID: markers.runId,
+        }, markers.create);
 
-        let createStage;
-        if (singlePrompt) {
-          // 全部小文件：一条 heredoc prompt
-          createStage = await runDeployStage({
-            client, log, accountId: account.id, stage: 'create',
-            prompt: singlePrompt,
-            timeoutMs: 120_000, matchText: markers.create,
+        log('info', `Bootstrap prompt size: ${Buffer.byteLength(bootstrapPrompt, 'utf-8')} bytes`);
+
+        const bootstrapStage = await runDeployStage({
+          client, log, accountId: account.id, stage: 'bootstrap',
+          prompt: bootstrapPrompt,
+          timeoutMs: 60_000, matchText: markers.create,
+        });
+
+        if (!bootstrapStage.ok) {
+          markStage('bootstrap', bootstrapStage.status, {
+            retryable: bootstrapStage.retryable, failureType: bootstrapStage.failureType,
+            lastError: bootstrapStage.message, confirmationSource: bootstrapStage.confirmationSource,
+            responseText: bootstrapStage.responseText, sessionKey: bootstrapStage.sessionKey,
           });
-
-          // 检测拒绝 → 降级重试（base64 写入）
-          if (!createStage.ok && createStage.refused) {
-            log('warn', '创建被拒绝，尝试降级写入 (base64 + tee)...');
-            result.refuseMeta = {
-              refusedAt: 'create',
-              refusePattern: createStage.message,
-              fallbackUsed: 'base64',
-              fallbackSucceeded: false,
-            };
-            createStage = await runDeployStage({
-              client, log, accountId: account.id, stage: 'create-fallback',
-              prompt: buildFallbackCreatePrompt(files, markers.create, SKILL_DIR, SCRIPT_DIR),
-              timeoutMs: 120_000, matchText: markers.create,
-            });
-            if (createStage.ok && result.refuseMeta) {
-              result.refuseMeta.fallbackSucceeded = true;
-            }
-          }
-        } else {
-          // 有大文件：分步写入（目录 → 小文件 → 大文件分块 → 验证）
-          log('info', '检测到大文件，使用分块写入...');
-          const plan = planFileWrites(files, markers.create, SKILL_DIR, SCRIPT_DIR);
-
-          // 2a: 创建目录
-          const dirStage = await runDeployStage({
-            client, log, accountId: account.id, stage: 'create-dir',
-            prompt: plan.dirPrompt,
-            timeoutMs: 30_000, matchText: 'OK',
-          });
-          if (!dirStage.ok) {
-            log('warn', '创建目录失败，尝试继续...');
-          }
-
-          // 2b: 写入小文件（heredoc）
-          if (plan.smallFilesPrompt) {
-            const smallStage = await runDeployStage({
-              client, log, accountId: account.id, stage: 'create-small',
-              prompt: plan.smallFilesPrompt,
-              timeoutMs: 60_000, matchText: 'OK',
-            });
-            if (!smallStage.ok) {
-              log('warn', '小文件写入未确认，继续尝试大文件...');
-            }
-          }
-
-          // 2c: 大文件 base64 分块写入
-          log('info', `开始分块写入 ${plan.chunks.length} 个分块...`);
-          let allChunksOk = true;
-          for (const chunk of plan.chunks) {
-            const chunkPrompt = buildChunkPrompt(chunk);
-            const chunkStage = await runDeployStage({
-              client, log, accountId: account.id, stage: `create-chunk-${chunk.chunkIndex}`,
-              prompt: chunkPrompt,
-              timeoutMs: 30_000, matchText: 'CHUNK_OK',
-            });
-            if (!chunkStage.ok) {
-              log('error', `分块 ${chunk.chunkIndex + 1}/${chunk.totalChunks} 写入失败: ${chunkStage.failureType}`);
-              allChunksOk = false;
-              // 分块失败不中断，继续尝试后续分块（部分写入仍可挽救）
-            }
-          }
-
-          // 2d: 验证
-          createStage = await runDeployStage({
-            client, log, accountId: account.id, stage: 'create-verify',
-            prompt: plan.verifyPrompt,
-            timeoutMs: 60_000, matchText: markers.create,
-          });
-
-          if (!createStage.ok && allChunksOk) {
-            // 分块都成功了但验证失败，可能是文件损坏
-            log('warn', '分块写入成功但验证失败，可能文件损坏');
-          }
-        }
-
-        if (!createStage.ok) {
-          markStage('create', createStage.status, {
-            retryable: createStage.retryable, failureType: createStage.failureType,
-            lastError: createStage.message, confirmationSource: createStage.confirmationSource,
-            responseText: createStage.responseText, sessionKey: createStage.sessionKey,
-          });
-          if (createStage.refused) {
-            result.refuseMeta = result.refuseMeta || {
-              refusedAt: 'create', refusePattern: createStage.message,
-              fallbackUsed: null, fallbackSucceeded: false,
-            };
-            result.refuseMeta.fallbackUsed = result.refuseMeta.fallbackUsed || null;
-            result.refuseMeta.fallbackSucceeded = false;
-          }
-          const err = new Error(createStage.message);
+          const err = new Error(bootstrapStage.message);
           err.deployResult = result;
           throw err;
         }
+
         result.created = true;
-        markStage('create', 'ok', {
-          confirmationSource: createStage.confirmationSource,
-          responseText: createStage.responseText, sessionKey: createStage.sessionKey,
-        });
-        log('ok', 'Tunnel Proxy 文件已写入');
-
-        // 阶段 3: 启动
-        log('info', '启动 tunnel proxy...');
-        markStage('start', 'running');
-
-        let startStage = await runDeployStage({
-          client, log, accountId: account.id, stage: 'start',
-          prompt: buildStartProxyPrompt(markers.start, SCRIPT_DIR),
-          timeoutMs: 60_000, matchText: markers.start,
-        });
-
-        // 检测拒绝 → 降级重试（bash -c）
-        if (!startStage.ok && startStage.refused) {
-          log('warn', '启动被拒绝，尝试降级启动 (bash -c)...');
-          result.refuseMeta = {
-            refusedAt: 'start',
-            refusePattern: startStage.message,
-            fallbackUsed: 'bash -c',
-            fallbackSucceeded: false,
-          };
-          startStage = await runDeployStage({
-            client, log, accountId: account.id, stage: 'start-fallback',
-            prompt: buildStartProxyPrompt(markers.start, SCRIPT_DIR, true),
-            timeoutMs: 60_000, matchText: markers.start,
-          });
-          if (startStage.ok && result.refuseMeta) {
-            result.refuseMeta.fallbackSucceeded = true;
-          }
-        }
-
-        if (!startStage.ok) {
-          markStage('start', startStage.status, {
-            retryable: startStage.retryable, failureType: startStage.failureType,
-            lastError: startStage.message, confirmationSource: startStage.confirmationSource,
-            responseText: startStage.responseText, sessionKey: startStage.sessionKey,
-          });
-          if (startStage.refused) {
-            result.refuseMeta = result.refuseMeta || {
-              refusedAt: 'start', refusePattern: startStage.message,
-              fallbackUsed: null, fallbackSucceeded: false,
-            };
-          }
-          // 如果 create 成功但 start 被拒绝，标记 partial success
-          if (result.created && startStage.refused) {
-            result.refuseMeta = result.refuseMeta || {};
-            result.refuseMeta.refusedAt = 'start';
-          }
-          const err = new Error(startStage.message);
-          err.deployResult = result;
-          throw err;
-        }
         result.started = true;
-        markStage('start', 'ok', {
-          confirmationSource: startStage.confirmationSource,
-          responseText: startStage.responseText, sessionKey: startStage.sessionKey,
+        markStage('bootstrap', 'ok', {
+          confirmationSource: bootstrapStage.confirmationSource,
+          responseText: bootstrapStage.responseText, sessionKey: bootstrapStage.sessionKey,
         });
-        log('ok', 'Tunnel Proxy 启动命令已执行');
+        log('ok', 'Bootstrap 部署完成，tunnel-proxy 已启动');
 
-        // 阶段 4: 等待 tunnel 连接（由 Scheduler 或 AccountWorker 轮询确认）
+        // 阶段 3: 等待 tunnel 连接（由 Scheduler 或 AccountWorker 轮询确认）
         result.ok = true;
         result.verified = false;
         result.healthOk = false;
