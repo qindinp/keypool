@@ -8,7 +8,7 @@
 - ✅ 标准 Git 操作，安全审查直接放行
 - ✅ 版本管理，随时回滚
 - ✅ 无需 VirusTotal 扫描
-- ✅ 公开仓库，无需认证
+- ✅ 支持私密仓库
 
 ## 步骤
 
@@ -16,11 +16,26 @@
 
 1. 访问 https://gitee.com/projects/new
 2. 仓库名称: `keypool-tunnel`
-3. 选择 **公开（Public）**
+3. 选择 **私密（Private）**
 4. **不要**初始化 README
 5. 点击创建
 
-### 2. 推送 skill 代码
+### 2. 创建 Personal Access Token
+
+1. 访问 https://gitee.com/profile/personal_access_tokens
+2. 点击 **生成新令牌**
+3. 权限选择：**projects**（读写）
+4. 复制生成的 token
+
+### 3. 配置 config.json
+
+```json
+{
+  "giteeToken": "你的 Personal Access Token"
+}
+```
+
+### 4. 推送 skill 代码
 
 ```bash
 cd /root/.openclaw/workspace/keypool
@@ -33,8 +48,8 @@ git init
 git config user.email "deploy@keypool.local"
 git config user.name "KeyPool Deployer"
 
-# 添加远程仓库
-git remote add origin https://gitee.com/qindinp/keypool-tunnel.git
+# 添加远程仓库（带 token）
+git remote add origin https://oauth2:YOUR_TOKEN@gitee.com/qindinp/keypool-tunnel.git
 
 # 添加文件并提交
 git add -A
@@ -44,11 +59,11 @@ git commit -m "feat: KeyPool Tunnel Proxy v0.3.0"
 git push -u origin master
 ```
 
-### 3. 验证仓库
+### 5. 验证仓库
 
 访问 https://gitee.com/qindinp/keypool-tunnel 确认文件已上传。
 
-### 4. 部署流程
+## 部署流程
 
 Deployer 发送的命令：
 
@@ -56,8 +71,8 @@ Deployer 发送的命令：
 # 删除旧目录
 rm -rf /root/.openclaw/skills/keypool-tunnel
 
-# 克隆仓库
-git clone --depth 1 https://gitee.com/qindinp/keypool-tunnel.git /root/.openclaw/skills/keypool-tunnel
+# 克隆仓库（带 token 认证）
+git clone --depth 1 https://oauth2:TOKEN@gitee.com/qindinp/keypool-tunnel.git /root/.openclaw/skills/keypool-tunnel
 
 # 验证文件
 test -f /root/.openclaw/skills/keypool-tunnel/SKILL.md && echo "SKILL.md found"
