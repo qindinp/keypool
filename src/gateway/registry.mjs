@@ -1,0 +1,102 @@
+/**
+ * Gateway 注册表 — 实例状态管理
+ *
+ * 职责：
+ * - 管理各账号的实例状态（NONE/CREATING/READY/DEPLOYING/ACTIVE/FAILED...）
+ * - 提供 verified upstream 查询（Gateway 路由用）
+ * - 不再管理 Agent WS 连接（已移除）
+ */
+
+export class Registry {
+  constructor() {
+    /** @type {Map<string, InstanceState>} accountId → state */
+    this.instances = new Map();
+  }
+
+  // ─── 实例状态管理（Manager 调用） ────────────────────────────
+
+  setInstanceStatus(accountId, status) {
+    const state = this.instances.get(accountId) || {};
+    state.status = status;
+    this.instances.set(accountId, state);
+  }
+
+  updateInstanceState(accountId, patch = {}) {
+    const state = this.instances.get(accountId) || {};
+    this.instances.set(accountId, { ...state, ...patch });
+  }
+
+  getInstanceState(accountId) {
+    return this.instances.get(accountId) || null;
+  }
+
+  getInstanceStatus(accountId) {
+    return this.instances.get(accountId)?.status || 'NONE';
+  }
+
+  getAllInstances() {
+    return this.instances;
+  }
+
+  // ─── 路由查询（Gateway 调用） ───────────────────────────────
+
+  /**
+   * 获取已验证且可路由的 skill-proxy 上游实例
+   * @param {string} [model]
+   * @returns {Array<object>}
+   */
+  getVerifiedUpstreams(model) {
+    const list = [...this.instances.values()]
+      .filter(s => s && s.verified && (s.proxyUrl || s.baseUrl || s.localUrl))
+      .filter(s => !s.status || ['ACTIVE', 'DEPLOYED_UNVERIFIED'].includes(s.status));
+
+    const filtered = model
+      ? list.filter(s => {
+          const models = Array.isArray(s.models) ? s.models : [];
+          return models.length === 0 || models.includes(model);
+        })
+      : list;
+
+    return filtered.sort((a, b) => {
+      const pa = Number.isFinite(a.priority) ? a.priority : 100;
+      const pb = Number.isFinite(b.priority) ? b.priority : 100;
+      if (pa !== pb) return pa - pb;
+      const va = a.lastVerifiedAt ? Date.parse(a.lastVerifiedAt) || 0 : 0;
+      const vb = b.lastVerifiedAt ? Date.parse(b.lastVerifiedAt) || 0 : 0;
+      return vb - va;
+    });
+  }
+
+  /**
+   * 选择一个已验证的 skill-proxy 上游
+   * @param {string} [model]
+   * @returns {object|null}
+   */
+  chooseVerifiedUpstream(model) {
+    return this.getVerifiedUpstreams(model)[0] || null;
+  }
+
+  /**
+   * 标记代理请求成功
+   */
+  markProxySuccess(accountId, latencyMs) {
+    const state = this.instances.get(accountId);
+    if (!state) return;
+    state.lastUsedAt = new Date().toISOString();
+    state.lastProxyLatencyMs = latencyMs;
+    state.healthOk = true;
+    state.consecutiveFailures = 0;
+  }
+
+  /**
+   * 标记代理请求失败
+   */
+  markProxyFailure(accountId, error) {
+    const state = this.instances.get(accountId);
+    if (!state) return;
+    state.lastHealthError = error;
+    state.lastProxyError = error;
+    state.healthOk = false;
+    state.consecutiveFailures = (state.consecutiveFailures || 0) + 1;
+  }
+}

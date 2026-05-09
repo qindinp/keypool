@@ -1,0 +1,11 @@
+{
+  "port": 9300,
+  "host": "0.0.0.0",
+  "checkInterval": 60,
+  "renewBefore": 300,
+  "maxRetries": 5,
+  "retryBaseDelay": 5000,
+  "retryMaxDelay": 60000,
+  "chatTimeout": 120000,
+  "wsConnectTimeout": 30000
+}

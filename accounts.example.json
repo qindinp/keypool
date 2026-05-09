@@ -1,0 +1,20 @@
+{
+  "accounts": [
+    {
+      "id": "mimo-a",
+      "name": "小米账号A",
+      "enabled": true,
+      "priority": 10,
+      "cookie": "serviceToken=xxx; userId=yyy",
+      "tags": ["primary"]
+    },
+    {
+      "id": "mimo-b",
+      "name": "小米账号B",
+      "enabled": false,
+      "priority": 20,
+      "cookie": "serviceToken=xxx; userId=yyy",
+      "tags": ["standby"]
+    }
+  ]
+}

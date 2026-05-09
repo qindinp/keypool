@@ -1,0 +1,21 @@
+{
+  "name": "keypool",
+  "version": "3.0.0",
+  "description": "多小米账号 AI Studio 实例编排器 + 统一 API 网关",
+  "type": "module",
+  "scripts": {
+    "start": "node bin/app.mjs",
+    "dev": "node --watch bin/app.mjs",
+    "test": "node --test tests/"
+  },
+  "keywords": [
+    "mimo",
+    "ai-studio",
+    "key-pool",
+    "gateway"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}
