@@ -47,7 +47,7 @@ export class Registry {
    */
   getVerifiedUpstreams(model) {
     const list = [...this.instances.values()]
-      .filter(s => s && s.verified && (s.proxyUrl || s.baseUrl || s.localUrl))
+      .filter(s => s && s.verified && (s.proxyUrl || s.baseUrl || s.localUrl || s.tunnel))
       .filter(s => !s.status || ['ACTIVE', 'DEPLOYED_UNVERIFIED'].includes(s.status));
 
     const filtered = model

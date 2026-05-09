@@ -56,7 +56,7 @@ export class AccountWorker {
     if (!this.deployer) return null;
 
     this.setState('DEPLOYING', {
-      deployMode: 'skill-proxy',
+      deployMode: 'tunnel',
       verified: false,
       healthOk: false,
       lastDeployAt: new Date().toISOString(),
@@ -69,8 +69,9 @@ export class AccountWorker {
     const result = await this.deployer.deploy(this.account);
 
     const deployMeta = {
-      deployMode: result?.deployMode || 'skill-proxy',
+      deployMode: result?.deployMode || 'tunnel',
       proxyUrl: result?.proxyUrl || null,
+      runId: result?.runId || null,
       created: !!result?.created,
       started: !!result?.started,
       healthOk: !!result?.healthOk,
@@ -78,8 +79,8 @@ export class AccountWorker {
       lastDeployAt: new Date().toISOString(),
       lastVerifiedAt: result?.verified ? new Date().toISOString() : null,
       lastDeployError: null,
-      deployStage: result?.stage || (result?.verified ? 'complete' : 'health'),
-      deployStatus: result?.stageStatus || (result?.verified ? 'ok' : 'failed'),
+      deployStage: result?.stage || (result?.verified ? 'complete' : 'tunnel-wait'),
+      deployStatus: result?.stageStatus || (result?.verified ? 'ok' : 'pending'),
       retryable: result?.retryable !== false,
       failureType: result?.failureType || null,
       confirmationSource: result?.confirmationSource || null,
@@ -89,12 +90,13 @@ export class AccountWorker {
 
     if (result?.verified) {
       this.setState('ACTIVE', deployMeta);
-      console.log(`✅ [${this.account.id}] 代理部署完成并验证可用 (${result.proxyUrl})`);
+      console.log(`✅ [${this.account.id}] 部署完成并验证可用 (${result.proxyUrl || 'tunnel'})`);
       return result;
     }
 
+    // Tunnel 模式：部署完成但等待 tunnel 连接
     this.setState('DEPLOYED_UNVERIFIED', deployMeta);
-    console.log(`⚠️ [${this.account.id}] 代理部署完成，但尚未验证为 ACTIVE (${result?.proxyUrl || 'unknown'})`);
+    console.log(`⏳ [${this.account.id}] 部署完成，等待 tunnel 连接到 Gateway...`);
     return result;
   }
 

@@ -15,6 +15,7 @@ import { Registry } from './registry.mjs';
 import { createProxyHandler, readBody } from './proxy.mjs';
 import { createAdminHandler } from './admin.mjs';
 import { anthropicToOpenAI, openAIToAnthropic, openAIChunkToAnthropicEvents } from './adapter.mjs';
+import { createTunnelServer } from './tunnel.mjs';
 
 /**
  * 创建 Gateway
@@ -30,7 +31,8 @@ export function createGateway(config) {
     adminContext.manager = manager;
   }
 
-  const proxyHandler = createProxyHandler(registry);
+  const tunnel = createTunnelServer(registry);
+  const proxyHandler = createProxyHandler(registry, tunnel.sendProxyRequest);
   const adminHandler = createAdminHandler(registry, adminContext);
 
   const httpServer = createServer(async (req, res) => {
@@ -144,8 +146,6 @@ export function createGateway(config) {
     const model = anthropicBody.model || 'unknown';
     const openaiBody = JSON.stringify(openaiReq);
 
-    // 直接用 proxyHandler 转发 OpenAI 格式请求
-    // 需要包装 res 来拦截响应并转换回 Anthropic 格式
     const upstream = registry.chooseVerifiedUpstream(openaiReq.model);
     if (!upstream) {
       res.writeHead(503, { 'content-type': 'application/json' });
@@ -153,11 +153,87 @@ export function createGateway(config) {
       return;
     }
 
+    let response;
+
+    // ─── Tunnel 模式 ───────────────────────────────────────
+    if (upstream.tunnel && tunnel.sendProxyRequest) {
+      try {
+        const tunnelResp = await tunnel.sendProxyRequest(upstream.tunnel, {
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json', 'accept': isStream ? 'text/event-stream' : 'application/json' },
+          body: openaiBody,
+        });
+
+        if (isStream) {
+          // Tunnel 返回的是缓冲的完整响应，需要重新解析为 Anthropic SSE
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            'connection': 'keep-alive',
+          });
+
+          const state = {
+            started: false, blockIndex: 0,
+            thinkingStarted: false, thinkingClosed: false,
+            textStarted: false, textClosed: false,
+            model,
+          };
+
+          // tunnelResp.body 是完整的 SSE 文本
+          const lines = (tunnelResp.body || '').split('\n');
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+            const payload = trimmed.slice(6).trim();
+            if (payload === '[DONE]') continue;
+            try {
+              const oaiChunk = JSON.parse(payload);
+              const events = openAIChunkToAnthropicEvents(oaiChunk, state);
+              for (const event of events) {
+                res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+              }
+            } catch (err) {
+              console.warn(`⚠️ SSE chunk parse error: ${err.message}`);
+            }
+          }
+
+          if (state.started && !state.textClosed && !state.thinkingClosed) {
+            res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } })}\n\n`);
+            res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+          }
+          res.end();
+        } else {
+          // 非流式
+          const oaiResp = JSON.parse(tunnelResp.body || '{}');
+          const anthropicResp = openAIToAnthropic(oaiResp, model);
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(anthropicResp));
+        }
+
+        registry.markProxySuccess(upstream.accountId, 0);
+        return;
+      } catch (err) {
+        registry.markProxyFailure(upstream.accountId, err.message);
+        console.error(`❌ tunnel anthropic proxy failed [${upstream.accountId}]: ${err.message}`);
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
+        return;
+      }
+    }
+
+    // ─── HTTP 直连模式 ─────────────────────────────────────
     const baseUrl = upstream.proxyUrl || upstream.baseUrl || upstream.localUrl;
+    if (!baseUrl) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No upstream connection' } }));
+      return;
+    }
+
     const targetUrl = new URL('/v1/chat/completions', baseUrl).toString();
 
     try {
-      const response = await fetch(targetUrl, {
+      response = await fetch(targetUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'accept': isStream ? 'text/event-stream' : 'application/json' },
         body: openaiBody,
@@ -230,7 +306,18 @@ export function createGateway(config) {
         console.log(`🚀 Gateway 启动: http://${config.host || '0.0.0.0'}:${config.port}`);
         console.log(`   Admin: http://localhost:${config.port}/admin`);
         console.log(`   Health: http://localhost:${config.port}/health`);
+        console.log(`   Tunnel: ws://${config.host || '0.0.0.0'}:${config.port}/tunnel`);
         resolve();
+      });
+
+      // WebSocket upgrade: /tunnel
+      httpServer.on('upgrade', (req, socket, head) => {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        if (url.pathname === '/tunnel') {
+          tunnel.handleUpgrade(req, socket, head);
+        } else {
+          socket.destroy();
+        }
       });
     });
   }

@@ -1,17 +1,16 @@
 /**
- * Deployer — 通过 Skill 方式部署 API 代理到 MiMo 沙箱实例
+ * Deployer — 部署 Tunnel Proxy 到 MiMo 沙箱实例
  *
  * 流程：
  * 1. 通过 DeployClient 连接到沙箱 OpenClaw
- * 2. 让沙箱在 ~/.openclaw/skills/ 创建 keypool-proxy skill
- * 3. 写入 skill-proxy/server.mjs 到远端 skill 目录
- * 4. 启动代理服务（localhost:9200）
- * 5. 校验 localhost:9200/health
+ * 2. 让沙箱创建 tunnel-proxy skill（WS 反连回 Gateway）
+ * 3. 写入 tunnel proxy 代码
+ * 4. 启动 tunnel proxy（后台运行）
+ * 5. 等待 Gateway 收到 tunnel 连接 → 实例自动变为 ACTIVE
  *
- * 设计目标：
- * - 部署步骤分阶段可观测
- * - 不把“命令发出成功”等同于“实例已 ACTIVE”
- * - 返回结构化结果，交由 AccountWorker 决定状态推进
+ * 与旧方案的区别：
+ * - 旧：远端 HTTP proxy + Gateway 主动连远端（不可达）
+ * - 新：远端 WS client 主动连回 Gateway（可达）
  */
 
 import { readFileSync } from 'node:fs';
@@ -23,18 +22,17 @@ import { createMimoApi } from './instance.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-const PROXY_PORT = 9200;
-const SKILL_NAME = 'keypool-proxy';
+const SKILL_NAME = 'keypool-tunnel';
 const SKILL_DIR = `/root/.openclaw/skills/${SKILL_NAME}`;
 const SCRIPT_DIR = `${SKILL_DIR}/scripts`;
-const SERVER_PATH = `${SCRIPT_DIR}/server.mjs`;
+const PROXY_PATH = `${SCRIPT_DIR}/tunnel-proxy.mjs`;
 
 function buildStageMarkers(accountId) {
   const runId = `${accountId}-${Date.now().toString(36)}`;
   return {
-    create: `KEYPOOL_SKILL_CREATED_${runId}`,
-    start: `KEYPOOL_PROXY_STARTED_${runId}`,
-    health: `KEYPOOL_PROXY_HEALTHY_${runId}`,
+    create: `KEYPOOL_TUNNEL_CREATED_${runId}`,
+    start: `KEYPOOL_TUNNEL_STARTED_${runId}`,
+    runId,
   };
 }
 
@@ -52,17 +50,7 @@ function classifyDeployError(err) {
   else if (disconnected) failureType = 'disconnected';
   else if (unavailable) failureType = 'upstream_unavailable';
 
-  const retryable = !refused;
-
-  return {
-    message,
-    failureType,
-    timedOut,
-    refused,
-    disconnected,
-    unavailable,
-    retryable,
-  };
+  return { message, failureType, timedOut, refused, disconnected, unavailable, retryable: !refused };
 }
 
 async function runDeployStage({ client, log, accountId, stage, prompt, timeoutMs, matchText }) {
@@ -76,10 +64,7 @@ async function runDeployStage({ client, log, accountId, stage, prompt, timeoutMs
       sessionKey: `deploy-${stage}-${accountId}-${Date.now().toString(36)}`,
     });
     return {
-      ok: true,
-      stage,
-      status: 'ok',
-      matchText,
+      ok: true, stage, status: 'ok', matchText,
       confirmationSource: response?.confirmationSource || 'live',
       sessionKey: response?.sessionKey || null,
       responseText: response?.text || '',
@@ -87,37 +72,42 @@ async function runDeployStage({ client, log, accountId, stage, prompt, timeoutMs
   } catch (err) {
     const meta = classifyDeployError(err);
     return {
-      ok: false,
-      stage,
+      ok: false, stage,
       status: meta.timedOut ? 'timeout' : meta.refused ? 'refused' : 'failed',
-      matchText,
-      confirmationSource: 'none',
-      sessionKey: null,
-      responseText: '',
+      matchText, confirmationSource: 'none', sessionKey: null, responseText: '',
       ...meta,
     };
   }
 }
 
-
-function loadServerCode() {
-  const localPath = resolve(__dirname, '..', '..', 'skill-proxy', 'server.mjs');
-  try {
-    return readFileSync(localPath, 'utf-8');
-  } catch (err) {
-    console.warn(`⚠️ 本地 server.mjs 读取失败，使用内置 fallback: ${err.message}`);
-  }
-
+/**
+ * 生成 Tunnel Proxy 代码
+ * 这段代码运行在远端沙箱实例上，通过 WS 反连回 Gateway
+ *
+ * @param {string} accountId
+ * @param {string} gatewayWsUrl - Gateway 的 WS 地址 (ws://IP:PORT/tunnel)
+ * @param {string} runId - 本次部署的唯一标识
+ */
+function generateTunnelProxyCode(accountId, gatewayWsUrl, runId) {
+  // 用模板字符串生成，避免转义地狱
   return `#!/usr/bin/env node
-import { createServer } from 'node:http';
+/**
+ * KeyPool Tunnel Proxy
+ * 主动 WebSocket 反连 Gateway，接收并执行 API 请求
+ */
 import { request as httpsRequest } from 'node:https';
 import { readFileSync, existsSync } from 'node:fs';
+
+// ─── 配置 ──────────────────────────────────────────────────
+const ACCOUNT_ID = ${JSON.stringify(accountId)};
+const GATEWAY_WS_URL = ${JSON.stringify(gatewayWsUrl)};
+const RUN_ID = ${JSON.stringify(runId)};
 
 function readEnvFile(path) {
   if (!existsSync(path)) return {};
   const content = readFileSync(path, 'utf8');
   const env = {};
-  for (const line of content.split(/\r?\n/)) {
+  for (const line of content.split(/\\r?\\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     const eq = trimmed.indexOf('=');
@@ -131,78 +121,162 @@ const instanceEnv = readEnvFile('/root/.openclaw/.env');
 const apiKey = process.env.MIMO_API_KEY || instanceEnv.MIMO_API_KEY;
 if (!apiKey) { console.error('MIMO_API_KEY missing'); process.exit(1); }
 
-const baseUrl = (process.env.MIMO_BASE_URL || instanceEnv.MIMO_BASE_URL || 'https://api-oc.xiaomimimo.com/v1').replace(/\/$/, '');
-const PORT = parseInt(process.env.KEYPOOL_PROXY_PORT || '${PROXY_PORT}');
+const baseUrl = (process.env.MIMO_BASE_URL || instanceEnv.MIMO_BASE_URL || 'https://api-oc.xiaomimimo.com/v1').replace(/\\/$/, '');
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', c => body += c);
-    req.on('end', () => resolve(body));
-    req.on('error', reject);
+console.log('[tunnel-proxy] baseUrl:', baseUrl);
+console.log('[tunnel-proxy] hasKey:', !!apiKey);
+
+// ─── 读取内置 ws 模块 ─────────────────────────────────────
+let WebSocket;
+try {
+  const wsMod = await import('ws');
+  WebSocket = wsMod.default || wsMod;
+} catch {
+  console.error('ws module not found, installing...');
+  const { execSync } = await import('node:child_process');
+  execSync('npm install ws', { stdio: 'inherit' });
+  const wsMod = await import('ws');
+  WebSocket = wsMod.default || wsMod;
+}
+
+// ─── HTTP 请求执行 ─────────────────────────────────────────
+function handleProxyRequest(req) {
+  return new Promise((resolve) => {
+    const targetPath = req.path || '/v1/chat/completions';
+    const target = new URL(targetPath, baseUrl);
+    const headers = { ...(req.headers || {}) };
+    delete headers.host;
+    delete headers['content-length'];
+    headers['authorization'] = 'Bearer ' + apiKey;
+    headers['accept-encoding'] = 'identity';
+
+    const proxyReq = httpsRequest({
+      hostname: target.hostname,
+      port: 443,
+      path: target.pathname + target.search,
+      method: req.method || 'POST',
+      headers,
+    }, (proxyRes) => {
+      const chunks = [];
+      proxyRes.on('data', c => chunks.push(c));
+      proxyRes.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf-8');
+        const respHeaders = {};
+        for (const [key, value] of Object.entries(proxyRes.headers)) {
+          if (Array.isArray(value)) respHeaders[key] = value.join(', ');
+          else if (value) respHeaders[key] = value;
+        }
+        resolve({
+          type: 'proxy_response',
+          id: req.id,
+          status: proxyRes.statusCode,
+          headers: respHeaders,
+          body,
+        });
+      });
+    });
+
+    proxyReq.on('error', (err) => {
+      resolve({
+        type: 'proxy_error',
+        id: req.id,
+        error: err.message,
+      });
+    });
+
+    proxyReq.setTimeout(120_000, () => {
+      proxyReq.destroy(new Error('upstream timeout'));
+    });
+
+    if (req.body) proxyReq.write(req.body);
+    proxyReq.end();
   });
 }
 
-const server = createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost:' + PORT);
-  res.setHeader('access-control-allow-origin', '*');
-  res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
-  res.setHeader('access-control-allow-headers', '*');
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+// ─── WebSocket 连接 ────────────────────────────────────────
+let ws = null;
+let reconnectDelay = 1000;
+const MAX_RECONNECT_DELAY = 30000;
 
-  if (url.pathname === '/health') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', baseUrl, hasKey: !!apiKey }));
-    return;
-  }
+function connect() {
+  const url = GATEWAY_WS_URL + '?accountId=' + encodeURIComponent(ACCOUNT_ID) + '&runId=' + encodeURIComponent(RUN_ID);
+  console.log('[tunnel-proxy] 连接 Gateway:', url);
 
-  if (url.pathname.startsWith('/v1/')) {
-    const body = req.method === 'GET' ? null : await readBody(req);
-    const target = new URL(url.pathname + url.search, baseUrl);
-    const proxyReq = httpsRequest({
-      hostname: target.hostname, port: 443,
-      path: target.pathname + target.search,
-      method: req.method,
-      headers: {
-        'content-type': req.headers['content-type'] || 'application/json',
-        'accept': req.headers['accept'] || 'application/json',
-        'authorization': 'Bearer ' + apiKey,
-        'accept-encoding': 'identity',
-      },
-    }, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, {
-        'content-type': proxyRes.headers['content-type'] || 'application/json',
-        'cache-control': 'no-cache',
-      });
-      proxyRes.pipe(res);
-    });
-    proxyReq.on('error', (err) => {
-      if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: err.message } }));
-    });
-    proxyReq.setTimeout(120000, () => proxyReq.destroy(new Error('timeout')));
-    if (body) proxyReq.write(body);
-    proxyReq.end();
-    return;
-  }
+  ws = new WebSocket(url, {
+    headers: { 'User-Agent': 'KeyPool-Tunnel-Proxy/1.0' },
+  });
 
-  res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({ name: 'KeyPool Proxy', version: '0.1.0', port: PORT }));
-});
+  ws.on('open', () => {
+    console.log('[tunnel-proxy] 已连接到 Gateway');
+    reconnectDelay = 1000;
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log('KeyPool Proxy on http://127.0.0.1:' + PORT);
-});
-process.on('SIGINT', () => { server.close(); process.exit(0); });
-process.on('SIGTERM', () => { server.close(); process.exit(0); });
+    // 注册
+    ws.send(JSON.stringify({
+      type: 'register',
+      accountId: ACCOUNT_ID,
+      runId: RUN_ID,
+    }));
+  });
+
+  ws.on('message', async (data) => {
+    let msg;
+    try { msg = JSON.parse(data.toString()); } catch { return; }
+
+    if (msg.type === 'ping') {
+      ws.send(JSON.stringify({ type: 'pong' }));
+      return;
+    }
+
+    if (msg.type === 'registered') {
+      console.log('[tunnel-proxy] 注册成功, accountId:', msg.accountId);
+      return;
+    }
+
+    if (msg.type === 'proxy_request') {
+      try {
+        const response = await handleProxyRequest(msg);
+        ws.send(JSON.stringify(response));
+      } catch (err) {
+        ws.send(JSON.stringify({
+          type: 'proxy_error',
+          id: msg.id,
+          error: err.message,
+        }));
+      }
+    }
+  });
+
+  ws.on('close', (code, reason) => {
+    console.log('[tunnel-proxy] 连接关闭:', code, reason?.toString());
+    scheduleReconnect();
+  });
+
+  ws.on('error', (err) => {
+    console.error('[tunnel-proxy] WS 错误:', err.message);
+  });
+}
+
+function scheduleReconnect() {
+  console.log('[tunnel-proxy] ' + reconnectDelay + 'ms 后重连...');
+  setTimeout(() => {
+    reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+    connect();
+  }, reconnectDelay);
+}
+
+// ─── 启动 ──────────────────────────────────────────────────
+connect();
+
+process.on('SIGINT', () => { if (ws) ws.close(); process.exit(0); });
+process.on('SIGTERM', () => { if (ws) ws.close(); process.exit(0); });
 `;
 }
 
-function buildCreateSkillPrompt(serverCode, marker) {
-  const escapedServerCode = serverCode.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
+function buildCreateSkillPrompt(proxyCode, marker, skillName) {
+  const escapedCode = proxyCode.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
 
   return [
-    '请帮我在本机创建一个 OpenClaw skill，用于运行 MiMo API 代理服务。',
+    '请帮我在本机创建一个 OpenClaw skill，用于运行 Tunnel Proxy（WebSocket 反连代理）。',
     '',
     '请严格按顺序执行以下步骤：',
     '',
@@ -213,28 +287,28 @@ function buildCreateSkillPrompt(serverCode, marker) {
     '',
     '步骤 2：写入 SKILL.md',
     '```bash',
-    `cat > ${SKILL_DIR}/SKILL.md << \'SKILLEOF\'`,
+    `cat > ${SKILL_DIR}/SKILL.md << 'SKILLEOF'`,
     '---',
-    `name: ${SKILL_NAME}`,
-    'version: 0.1.0',
-    'description: MiMo API proxy on localhost:9200',
+    `name: ${skillName}`,
+    'version: 0.2.0',
+    'description: KeyPool Tunnel Proxy (WebSocket reverse tunnel)',
     '---',
-    '# KeyPool Proxy',
-    'MiMo API 代理服务，运行在 localhost:9200',
+    '# KeyPool Tunnel Proxy',
+    'WebSocket 反连代理，主动连接 Gateway 接收 API 请求',
     'SKILLEOF',
     '```',
     '',
-    '步骤 3：直接写入代理服务器代码',
+    '步骤 3：写入 tunnel proxy 代码',
     '```bash',
-    `cat > ${SERVER_PATH} << \'SERVEREOF\'`,
-    escapedServerCode,
-    'SERVEREOF',
+    `cat > ${PROXY_PATH} << 'PROXYEOF'`,
+    escapedCode,
+    'PROXYEOF',
     '```',
     '',
     '步骤 4：验证文件存在和语法',
     '```bash',
-    `test -f ${SERVER_PATH}`,
-    `node --check ${SERVER_PATH}`,
+    `test -f ${PROXY_PATH}`,
+    `node --check ${PROXY_PATH}`,
     `echo ${marker}`,
     '```',
     '',
@@ -244,36 +318,24 @@ function buildCreateSkillPrompt(serverCode, marker) {
 
 function buildStartProxyPrompt(marker) {
   return [
-    '请启动刚才创建的 MiMo API 代理服务。',
+    '请启动刚才创建的 Tunnel Proxy 服务。',
     '',
     '请严格按顺序执行以下命令：',
     '```bash',
     `cd ${SCRIPT_DIR}`,
-    `if curl -fsS http://127.0.0.1:${PROXY_PORT}/health >/dev/null 2>&1; then`,
+    'pkill -f "tunnel-proxy.mjs" 2>/dev/null || true',
+    'sleep 1',
+    'nohup node tunnel-proxy.mjs > tunnel-proxy.log 2>&1 &',
+    'sleep 2',
+    'if pgrep -f "tunnel-proxy.mjs" >/dev/null; then',
     `  echo ${marker}`,
     'else',
-    '  node server.mjs > keypool-proxy.log 2>&1 &',
-    '  sleep 2',
-    `  curl -fsS http://127.0.0.1:${PROXY_PORT}/health >/dev/null`,
-    `  echo ${marker}`,
+    '  echo "FAILED: process not running"',
+    '  cat tunnel-proxy.log 2>/dev/null',
     'fi',
     '```',
     '',
-    `如果启动命令已执行成功，或者代理本来就在运行，只回复 ${marker}。失败请回复实际错误。`,
-  ].join('\n');
-}
-
-function buildVerifyHealthPrompt(marker) {
-  return [
-    '请验证本机代理服务是否已健康运行。',
-    '',
-    '请严格按顺序执行以下命令：',
-    '```bash',
-    `curl -fsS http://127.0.0.1:${PROXY_PORT}/health`,
-    `echo ${marker}`,
-    '```',
-    '',
-    `如果 health 成功，只回复 ${marker}。失败请回复实际错误。`,
+    `如果启动命令已执行成功，只回复 ${marker}。失败请回复实际错误。`,
   ].join('\n');
 }
 
@@ -294,7 +356,6 @@ export function createDeployer(config) {
   async function deploy(account) {
     return enqueueDeploy(account.id, async () => {
       const log = (level, ...args) => console.log(`[${level.toUpperCase()}] [deploy:${account.id}]`, ...args);
-      const proxyUrl = `http://127.0.0.1:${PROXY_PORT}`;
 
       const client = new DeployClient({
         cookie: account.cookie,
@@ -306,10 +367,14 @@ export function createDeployer(config) {
         log,
       });
 
+      const markers = buildStageMarkers(account.id);
+      const gatewayWsUrl = config.gatewayUrl || `ws://127.0.0.1:${process.env.PORT || 9300}/tunnel`;
+      const proxyCode = generateTunnelProxyCode(account.id, gatewayWsUrl, markers.runId);
+
       const result = {
         ok: false,
-        deployMode: 'skill-proxy',
-        proxyUrl,
+        deployMode: 'tunnel',
+        proxyUrl: null, // tunnel 模式不需要 proxyUrl，通过 WS 转发
         created: false,
         started: false,
         healthOk: false,
@@ -320,49 +385,37 @@ export function createDeployer(config) {
         failureType: null,
         lastError: null,
         timeline: [],
+        runId: markers.runId,
       };
 
       const markStage = (stage, status, extra = {}) => {
         result.stage = stage;
         result.stageStatus = status;
         Object.assign(result, extra);
-        result.timeline.push({
-          at: new Date().toISOString(),
-          stage,
-          status,
-          ...extra,
-        });
+        result.timeline.push({ at: new Date().toISOString(), stage, status, ...extra });
       };
 
       try {
+        // 阶段 1: 连接
         markStage('connect', 'running');
         log('info', '连接沙箱 OpenClaw...');
         await client.connect();
         markStage('connect', 'ok');
         log('ok', '已连接到沙箱');
 
-        const serverCode = loadServerCode();
-        const markers = buildStageMarkers(account.id);
-
-        log('info', `创建 skill (${serverCode.length} bytes 代码)...`);
+        // 阶段 2: 创建 skill + 写入代码
+        log('info', `创建 tunnel proxy skill (${proxyCode.length} bytes)...`);
         markStage('create', 'running');
         const createStage = await runDeployStage({
-          client,
-          log,
-          accountId: account.id,
-          stage: 'create',
-          prompt: buildCreateSkillPrompt(serverCode, markers.create),
-          timeoutMs: 120_000,
-          matchText: markers.create,
+          client, log, accountId: account.id, stage: 'create',
+          prompt: buildCreateSkillPrompt(proxyCode, markers.create, SKILL_NAME),
+          timeoutMs: 120_000, matchText: markers.create,
         });
         if (!createStage.ok) {
           markStage('create', createStage.status, {
-            retryable: createStage.retryable,
-            failureType: createStage.failureType,
-            lastError: createStage.message,
-            confirmationSource: createStage.confirmationSource,
-            responseText: createStage.responseText,
-            sessionKey: createStage.sessionKey,
+            retryable: createStage.retryable, failureType: createStage.failureType,
+            lastError: createStage.message, confirmationSource: createStage.confirmationSource,
+            responseText: createStage.responseText, sessionKey: createStage.sessionKey,
           });
           const err = new Error(createStage.message);
           err.deployResult = result;
@@ -371,30 +424,23 @@ export function createDeployer(config) {
         result.created = true;
         markStage('create', 'ok', {
           confirmationSource: createStage.confirmationSource,
-          responseText: createStage.responseText,
-          sessionKey: createStage.sessionKey,
+          responseText: createStage.responseText, sessionKey: createStage.sessionKey,
         });
-        log('ok', 'Skill 创建完成');
+        log('ok', 'Tunnel Proxy 代码已写入');
 
-        log('info', '启动代理服务...');
+        // 阶段 3: 启动
+        log('info', '启动 tunnel proxy...');
         markStage('start', 'running');
         const startStage = await runDeployStage({
-          client,
-          log,
-          accountId: account.id,
-          stage: 'start',
+          client, log, accountId: account.id, stage: 'start',
           prompt: buildStartProxyPrompt(markers.start),
-          timeoutMs: 60_000,
-          matchText: markers.start,
+          timeoutMs: 60_000, matchText: markers.start,
         });
         if (!startStage.ok) {
           markStage('start', startStage.status, {
-            retryable: startStage.retryable,
-            failureType: startStage.failureType,
-            lastError: startStage.message,
-            confirmationSource: startStage.confirmationSource,
-            responseText: startStage.responseText,
-            sessionKey: startStage.sessionKey,
+            retryable: startStage.retryable, failureType: startStage.failureType,
+            lastError: startStage.message, confirmationSource: startStage.confirmationSource,
+            responseText: startStage.responseText, sessionKey: startStage.sessionKey,
           });
           const err = new Error(startStage.message);
           err.deployResult = result;
@@ -403,45 +449,18 @@ export function createDeployer(config) {
         result.started = true;
         markStage('start', 'ok', {
           confirmationSource: startStage.confirmationSource,
-          responseText: startStage.responseText,
-          sessionKey: startStage.sessionKey,
+          responseText: startStage.responseText, sessionKey: startStage.sessionKey,
         });
-        log('ok', '代理服务启动命令已执行');
+        log('ok', 'Tunnel Proxy 启动命令已执行');
 
-        log('info', '验证代理健康状态...');
-        markStage('health', 'running');
-        const healthStage = await runDeployStage({
-          client,
-          log,
-          accountId: account.id,
-          stage: 'health',
-          prompt: buildVerifyHealthPrompt(markers.health),
-          timeoutMs: 60_000,
-          matchText: markers.health,
-        });
-        if (!healthStage.ok) {
-          markStage('health', healthStage.status, {
-            retryable: healthStage.retryable,
-            failureType: healthStage.failureType,
-            lastError: healthStage.message,
-            confirmationSource: healthStage.confirmationSource,
-            responseText: healthStage.responseText,
-            sessionKey: healthStage.sessionKey,
-          });
-          const err = new Error(healthStage.message);
-          err.deployResult = result;
-          throw err;
-        }
-        result.healthOk = true;
-        result.verified = true;
+        // 阶段 4: 等待 tunnel 连接（由 Scheduler 或 AccountWorker 轮询确认）
+        // 这里不阻塞等待，因为 tunnel 连接是异步的
+        // Scheduler 下次 tick 时会检查 registry 中是否有 tunnel 连接
         result.ok = true;
-        markStage('health', 'ok', {
-          confirmationSource: healthStage.confirmationSource,
-          responseText: healthStage.responseText,
-          sessionKey: healthStage.sessionKey,
-        });
-        markStage('complete', 'ok');
-        log('ok', '代理健康检查通过');
+        result.verified = false; // 需要等 tunnel 连接后才 verified
+        result.healthOk = false;
+        markStage('tunnel-wait', 'pending');
+        log('info', '等待远端 tunnel 连接到 Gateway...');
 
         return result;
       } catch (err) {

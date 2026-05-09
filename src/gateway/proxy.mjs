@@ -1,10 +1,10 @@
 /**
- * Gateway 请求代理 — 纯 HTTP 转发到 skill-proxy upstream
+ * Gateway 请求代理 — 支持 Tunnel（WS 反连）和 HTTP 直连
  *
  * 职责：
  * 1. 解析请求中的 model 字段
  * 2. 从 Registry 选择 verified upstream
- * 3. HTTP fetch 转发请求（支持流式 SSE 透传）
+ * 3. 优先通过 Tunnel（WS）转发，回退到 HTTP fetch
  * 4. 无可用 upstream 时返回 503
  */
 
@@ -25,9 +25,10 @@ export function readBody(req) {
 /**
  * 创建代理处理器
  * @param {import('./registry.mjs').Registry} registry
+ * @param {Function} [sendTunnelRequest] - tunnel 发送函数（来自 tunnel.mjs）
  * @returns {Function}
  */
-export function createProxyHandler(registry) {
+export function createProxyHandler(registry, sendTunnelRequest) {
   return async function handleProxy(req, res, body) {
     const startTime = Date.now();
 
@@ -50,7 +51,61 @@ export function createProxyHandler(registry) {
       return;
     }
 
+    // ─── 优先 Tunnel（WS 反连） ───────────────────────────
+    if (upstream.tunnel && sendTunnelRequest) {
+      try {
+        const tunnelResp = await sendTunnelRequest(upstream.tunnel, {
+          method: req.method,
+          path: req.url,
+          headers: { ...req.headers, host: undefined },
+          body: body || null,
+        });
+
+        const contentType = tunnelResp.headers?.['content-type'] || 'application/json';
+        const isStream = contentType.includes('text/event-stream');
+
+        res.writeHead(tunnelResp.status || 200, {
+          'content-type': contentType,
+          'cache-control': 'no-cache',
+        });
+
+        if (isStream && tunnelResp.body) {
+          // 流式响应：body 已被远端缓冲，直接写入
+          res.end(tunnelResp.body);
+        } else {
+          res.end(tunnelResp.body || '');
+        }
+
+        const latencyMs = Date.now() - startTime;
+        registry.markProxySuccess(upstream.accountId, latencyMs);
+        return;
+      } catch (err) {
+        registry.markProxyFailure(upstream.accountId, err.message);
+        console.error(`❌ tunnel proxy failed [${upstream.accountId}]: ${err.message}`);
+        // 回退到 HTTP 直连（如果有）
+        if (!upstream.proxyUrl && !upstream.baseUrl && !upstream.localUrl) {
+          if (!res.headersSent) {
+            res.writeHead(502, { 'content-type': 'application/json' });
+          }
+          res.end(JSON.stringify({
+            error: { message: err.message || 'Tunnel proxy failed', type: 'proxy_error' },
+          }));
+          return;
+        }
+        // 有 HTTP fallback，继续往下
+      }
+    }
+
+    // ─── HTTP 直连回退 ────────────────────────────────────
     const baseUrl = upstream.proxyUrl || upstream.baseUrl || upstream.localUrl;
+    if (!baseUrl) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        error: { message: 'No upstream connection available', type: 'service_unavailable' },
+      }));
+      return;
+    }
+
     const targetUrl = new URL(req.url, baseUrl).toString();
 
     // 转发 headers

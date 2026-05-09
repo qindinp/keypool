@@ -72,6 +72,20 @@ export class Scheduler {
 
       case 'READY':
       case 'DEPLOYED_UNVERIFIED':
+        // 检查 tunnel 模式：如果 tunnel 已连接，直接升级为 ACTIVE
+        if (state === 'DEPLOYED_UNVERIFIED' && instanceState.tunnel) {
+          if (!instanceState.verified || !instanceState.healthOk) {
+            console.log(`✅ [${worker.account.id}] Tunnel 已连接 → 标记为 ACTIVE`);
+            this.registry.updateInstanceState(worker.account.id, {
+              verified: true,
+              healthOk: true,
+              status: 'ACTIVE',
+              lastVerifiedAt: new Date().toISOString(),
+            });
+          }
+          break;
+        }
+
         // 检查实例是否还存活
         try {
           const status = await worker.api.getStatus(worker.account.cookie);
@@ -116,7 +130,16 @@ export class Scheduler {
           break;
         }
 
-        // 检查实例是否还存活
+        // Tunnel 模式：连接即健康，不需要 HTTP 状态检查
+        if (instanceState.tunnel) {
+          if (instanceState.tunnel.readyState !== 1) { // WebSocket.CLOSED
+            console.log(`⚠️ [${worker.account.id}] Tunnel 连接已断开 → 恢复`);
+            await worker.recover();
+          }
+          break;
+        }
+
+        // HTTP 模式：检查实例是否还存活
         try {
           const status = await worker.api.getStatus(worker.account.cookie);
           if (status.status !== 'AVAILABLE') {
