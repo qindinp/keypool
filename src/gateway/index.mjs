@@ -120,7 +120,9 @@ export function createGateway(config) {
             owned_by: item.owned_by || upstream.accountId,
           });
         }
-      } catch {}
+      } catch (err) {
+        console.warn(`⚠️ collectModels [${upstream.accountId}]: ${err.message}`);
+      }
     }
 
     return [...models.values()];
@@ -194,7 +196,9 @@ export function createGateway(config) {
               for (const event of events) {
                 res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
               }
-            } catch {}
+            } catch (err) {
+              console.warn(`⚠️ SSE chunk parse error: ${err.message}`);
+            }
           }
         }
 

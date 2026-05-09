@@ -64,11 +64,8 @@ keypool/
 │   │   ├── deploy-client.mjs #  WS 客户端（连小米平台）
 │   │   └── config.mjs       #   配置
 │   └── shared/              # 公共工具
-│       ├── ws.mjs           #   WebSocket 帧解析
-│       ├── http.mjs         #   HTTP 工具
-│       ├── cookie.mjs       #   Cookie 常量
-│       ├── logger.mjs       #   日志
-│       └── utils.mjs        #   通用工具
+│       ├── ws.mjs           #   WebSocket 文本提取
+│       └── cookie.mjs       #   Cookie 与 MiMo 常量
 ├── skill-proxy/             # 远端实例内运行的代理
 │   ├── server.mjs           #   主代理（读 .env）
 │   └── proxy-standalone.mjs #   独立代理（环境变量）

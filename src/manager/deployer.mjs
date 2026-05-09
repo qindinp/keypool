@@ -104,7 +104,9 @@ function loadServerCode() {
   const localPath = resolve(__dirname, '..', '..', 'skill-proxy', 'server.mjs');
   try {
     return readFileSync(localPath, 'utf-8');
-  } catch {}
+  } catch (err) {
+    console.warn(`⚠️ 本地 server.mjs 读取失败，使用内置 fallback: ${err.message}`);
+  }
 
   return `#!/usr/bin/env node
 import { createServer } from 'node:http';

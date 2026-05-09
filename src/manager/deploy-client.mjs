@@ -232,7 +232,9 @@ export class DeployClient {
       try {
         const text = typeof data === 'string' ? data : data.toString();
         onFrame(JSON.parse(text));
-      } catch {}
+      } catch (err) {
+        this.log('warn', `WS 消息解析失败: ${err.message}`);
+      }
     });
 
     this.socket.on('error', (e) => {

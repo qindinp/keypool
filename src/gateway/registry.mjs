@@ -99,4 +99,24 @@ export class Registry {
     state.healthOk = false;
     state.consecutiveFailures = (state.consecutiveFailures || 0) + 1;
   }
+
+  // ─── Agent 查询（兼容旧 Admin API） ───────────────────────
+
+  /**
+   * 获取所有已注册的 Agent 条目
+   * 当前架构已移除 Agent WS 回连，返回空数组
+   * @returns {Array<object>}
+   */
+  getAll() {
+    return [];
+  }
+
+  /**
+   * 获取健康的 Agent 条目
+   * 当前架构已移除 Agent WS 回连，返回空数组
+   * @returns {Array<object>}
+   */
+  getHealthy() {
+    return [];
+  }
 }

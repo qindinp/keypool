@@ -34,7 +34,7 @@ export function createProxyHandler(registry) {
     // 解析 model
     let model = null;
     if (body) {
-      try { model = JSON.parse(body).model || null; } catch {}
+      try { model = JSON.parse(body).model || null; } catch (err) { console.warn(`⚠️ proxy body parse error: ${err.message}`); }
     }
 
     // 选择 verified upstream
