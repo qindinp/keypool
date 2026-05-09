@@ -418,6 +418,7 @@ export function createDeployer(config) {
 
       const markers = buildStageMarkers(account.id);
       const gatewayWsUrl = config.gatewayUrl || `ws://127.0.0.1:${process.env.PORT || 9300}/tunnel`;
+      const gatewayHttpUrl = config.gatewayHttpBase || `http://127.0.0.1:${process.env.PORT || 9300}`;
 
       const result = {
         ok: false,
@@ -457,7 +458,7 @@ export function createDeployer(config) {
         markStage('bootstrap', 'running');
 
         const bootstrapPrompt = buildBootstrapPrompt({
-          KEYPOOL_GATEWAY_URL: gatewayWsUrl,
+          KEYPOOL_GATEWAY_URL: gatewayHttpUrl,
           KEYPOOL_ACCOUNT_ID: account.id,
           KEYPOOL_RUN_ID: markers.runId,
         }, markers.create);

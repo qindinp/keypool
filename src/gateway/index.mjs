@@ -47,7 +47,8 @@ export function createGateway(config) {
       // 文件服务（部署用）
       if (url.pathname.startsWith('/files/')) {
         const fileName = decodeURIComponent(url.pathname.slice('/files/'.length));
-        if (!/^[\w.\-]+$/.test(fileName)) {
+        // 支持子目录路径，但禁止路径穿越
+        if (!/^[\w.\-/]+$/.test(fileName) || fileName.includes('..') || fileName.startsWith('/')) {
           res.writeHead(400, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'Invalid file name' } }));
           return;
