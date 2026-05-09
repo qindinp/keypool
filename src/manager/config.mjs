@@ -16,5 +16,6 @@ export function createConfig(env = process.env) {
     retryBaseDelay: 5_000,
     retryMaxDelay: 60_000,
     mimoApiUrl: env.MIMO_API_URL || 'https://api-oc.xiaomimimo.com/v1',
+    giteeToken: env.GITEE_TOKEN || '',
   };
 }

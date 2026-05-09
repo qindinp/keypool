@@ -42,6 +42,7 @@ export function createManager(registry, opts = {}) {
     chatTimeout: config.chatTimeout,
     wsConnectTimeout: config.wsConnectTimeout,
     mimoApiUrl: config.mimoApiUrl,
+    giteeToken: config.giteeToken,
     registry,
   });
 
