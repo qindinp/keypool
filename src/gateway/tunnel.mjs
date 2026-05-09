@@ -8,6 +8,8 @@
  *   远端 → Gateway:  { type: 'register', accountId: '...' }
  *   Gateway → 远端:  { type: 'proxy_request', id, method, path, headers, body }
  *   远端 → Gateway:  { type: 'proxy_response', id, status, headers, body }
+ *   远端 → Gateway:  { type: 'proxy_response_chunk', id, chunkId, status?, headers?, chunk }
+ *   远端 → Gateway:  { type: 'proxy_response_end', id, totalChunks }
  *   远端 → Gateway:  { type: 'proxy_error', id, error }
  *   双向:            { type: 'ping' } / { type: 'pong' }
  */
@@ -72,7 +74,7 @@ export function createTunnelServer(registry) {
         return;
       }
 
-      // 响应
+      // 响应（非流式完整响应 + 错误）
       if (msg.type === 'proxy_response' || msg.type === 'proxy_error') {
         const pending = pendingRequests.get(msg.id);
         if (pending) {
@@ -84,6 +86,54 @@ export function createTunnelServer(registry) {
             pending.reject(new Error(msg.error || 'proxy error'));
           }
         }
+        return;
+      }
+
+      // 流式 chunk 响应
+      if (msg.type === 'proxy_response_chunk') {
+        const entry = pendingRequests.get(msg.id);
+        if (!entry) return; // 已超时或重连清理
+
+        if (msg.chunkId === 0) {
+          // 首 chunk：含 status + headers，开始 HTTP 响应
+          entry.status = msg.status;
+          entry.headers = msg.headers;
+          entry.chunks = [];
+          if (entry.res && !entry.res.headersSent) {
+            entry.res.writeHead(msg.status, {
+              'content-type': msg.headers?.['content-type'] || 'text/event-stream',
+              'cache-control': 'no-cache',
+              'transfer-encoding': 'chunked',
+            });
+          }
+        }
+        // 解码 base64 chunk 并写入 HTTP response
+        const buf = Buffer.from(msg.chunk, 'base64');
+        if (entry.chunks) entry.chunks.push(buf);
+        if (entry.res && !entry.res.writableEnded) {
+          try { entry.res.write(buf); } catch {}
+        }
+        return;
+      }
+
+      // 流式响应结束
+      if (msg.type === 'proxy_response_end') {
+        const entry = pendingRequests.get(msg.id);
+        if (!entry) return;
+        pendingRequests.delete(msg.id);
+        clearTimeout(entry.timeout);
+        if (entry.res && !entry.res.writableEnded) {
+          entry.res.end();
+        }
+        // 拼接 body 供非 chunk 场景使用
+        const body = entry.chunks ? Buffer.concat(entry.chunks).toString('utf-8') : '';
+        entry.resolve({
+          status: entry.status || 200,
+          headers: entry.headers || {},
+          body,
+        });
+        // 标记代理成功
+        registry.markProxySuccess(accountId, 0);
         return;
       }
 
@@ -105,6 +155,15 @@ export function createTunnelServer(registry) {
         });
         console.log(`🔌 [tunnel:${accountId}] 连接断开`);
       }
+      // 清理所有 pending requests（含 chunk 流）
+      for (const [id, entry] of pendingRequests) {
+        clearTimeout(entry.timeout);
+        if (entry.res && !entry.res.writableEnded) {
+          try { entry.res.end(); } catch {}
+        }
+        entry.reject(new Error('tunnel connection closed'));
+      }
+      pendingRequests.clear();
     });
 
     ws.on('error', (err) => {
@@ -122,25 +181,32 @@ export function createTunnelServer(registry) {
 
   // ─── 请求推送 ────────────────────────────────────────────
 
-  /** @type {Map<string, { resolve: Function, reject: Function, timeout: NodeJS.Timeout }>} */
+  /** @type {Map<string, { resolve: Function, reject: Function, timeout: NodeJS.Timeout, res?: object, chunks?: Buffer[], status?: number, headers?: object }>} */
   const pendingRequests = new Map();
 
   /**
    * 通过 tunnel 发送代理请求
    * @param {WebSocket} ws - tunnel 连接
    * @param {object} req - { method, path, headers, body }
-   * @param {number} timeoutMs
+   * @param {object} opts - { timeoutMs, res } res 为 HTTP response 对象时启用流式透传
    * @returns {Promise<{ status: number, headers: object, body: string }>}
    */
-  function sendProxyRequest(ws, req, timeoutMs = 120_000) {
+  function sendProxyRequest(ws, req, opts = {}) {
+    const timeoutMs = opts.timeoutMs || 120_000;
+    const res = opts.res || null;
+
     return new Promise((resolve, reject) => {
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const timeout = setTimeout(() => {
         pendingRequests.delete(id);
+        if (res && !res.writableEnded) {
+          try { res.end(); } catch {}
+        }
         reject(new Error('tunnel proxy timeout'));
       }, timeoutMs);
 
-      pendingRequests.set(id, { resolve, reject, timeout });
+      const entry = { resolve, reject, timeout, res, chunks: [], status: null, headers: null };
+      pendingRequests.set(id, entry);
 
       ws.send(JSON.stringify({
         type: 'proxy_request',
