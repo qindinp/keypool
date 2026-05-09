@@ -8,5 +8,5 @@
   "retryMaxDelay": 60000,
   "chatTimeout": 120000,
   "wsConnectTimeout": 30000,
-  "giteeToken": ""
+  "giteeToken": "0cacba5e98dc248d53f6138ded3a960c"
 }
