@@ -185,6 +185,12 @@ export function createTunnelServer(registry) {
         return;
       }
 
+      // ping（远端客户端也会主动保活；必须回复 pong，否则复杂请求耗时较长时客户端会误判超时并断开）
+      if (msg.type === 'ping') {
+        try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
+        return;
+      }
+
       // pong
       if (msg.type === 'pong') {
         lastPong = Date.now();
