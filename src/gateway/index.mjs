@@ -8,9 +8,6 @@
  */
 
 import { createServer } from 'node:http';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Registry } from './registry.mjs';
 import { createProxyHandler, readBody } from './proxy.mjs';
 import { createAdminHandler } from './admin.mjs';
@@ -25,7 +22,6 @@ import { createTunnelServer } from './tunnel.mjs';
 export function createGateway(config) {
   const registry = new Registry();
   const adminContext = { manager: config.manager || null };
-  const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
   function setManager(manager) {
     adminContext.manager = manager;
@@ -42,32 +38,6 @@ export function createGateway(config) {
       // Admin / Health
       if (url.pathname === '/health' || url.pathname.startsWith('/admin')) {
         return adminHandler(req, res);
-      }
-
-      // 文件服务（部署用）
-      if (url.pathname.startsWith('/files/')) {
-        const fileName = decodeURIComponent(url.pathname.slice('/files/'.length));
-        if (!/^[\w.\-]+$/.test(fileName)) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Invalid file name' } }));
-          return;
-        }
-        const filePath = resolve(workspaceRoot, fileName);
-        if (!existsSync(filePath)) {
-          res.writeHead(404, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Not found' } }));
-          return;
-        }
-        const content = readFileSync(filePath);
-        res.writeHead(200, {
-          'content-type': filePath.endsWith('.mjs') || filePath.endsWith('.js')
-            ? 'application/javascript; charset=utf-8'
-            : 'application/octet-stream',
-          'content-length': String(content.length),
-          'cache-control': 'no-store',
-        });
-        res.end(content);
-        return;
       }
 
       // /v1/models
