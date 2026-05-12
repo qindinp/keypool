@@ -331,21 +331,19 @@ function buildStartProxyPrompt(marker, scriptDir, fallback = false) {
     ? '上一次启动被安全策略拒绝，请用以下降级方式启动：'
     : '请启动刚才创建的 Tunnel Proxy 服务。';
 
-  const startCmd = fallback
-    ? `bash -c 'node tunnel-proxy.mjs > tunnel-proxy.log 2>&1 &'`
-    : 'nohup node tunnel-proxy.mjs > tunnel-proxy.log 2>&1 &';
-
   return [
     preamble,
     '',
     '请严格按顺序执行以下命令：',
     '```bash',
     `cd ${scriptDir}`,
-    'pkill -f "tunnel-proxy.mjs" 2>/dev/null || true',
+    '[ -f /tmp/tunnel-proxy.pid ] && kill $(cat /tmp/tunnel-proxy.pid) 2>/dev/null; rm -f /tmp/tunnel-proxy.pid',
     'sleep 1',
-    startCmd,
+    fallback
+      ? `bash -c 'node tunnel-proxy.mjs > tunnel-proxy.log 2>&1 & echo $! > /tmp/tunnel-proxy.pid'`
+      : 'nohup node tunnel-proxy.mjs > tunnel-proxy.log 2>&1 & echo $! > /tmp/tunnel-proxy.pid',
     'sleep 2',
-    'if pgrep -f "tunnel-proxy.mjs" >/dev/null; then',
+    'if [ -f /tmp/tunnel-proxy.pid ] && kill -0 $(cat /tmp/tunnel-proxy.pid) 2>/dev/null; then',
     `  echo ${marker}`,
     'else',
     '  echo "FAILED: process not running"',
@@ -403,10 +401,16 @@ function buildStartPrompt(marker, gatewayWsUrl, accountId, runId) {
     '项目已拉取完成，现在请启动这个项目：',
     '',
     '```bash',
-    `pkill -f "tunnel-proxy.mjs" 2>/dev/null; sleep 1`,
-    `KEYPOOL_GATEWAY_URL="${gatewayWsUrl}" KEYPOOL_ACCOUNT_ID="${accountId}" KEYPOOL_RUN_ID="${runId}" nohup node "${scriptPath}" > /tmp/tunnel-proxy.log 2>&1 &`,
+    '[ -f /tmp/tunnel-proxy.pid ] && kill $(cat /tmp/tunnel-proxy.pid) 2>/dev/null; rm -f /tmp/tunnel-proxy.pid',
+    'sleep 1',
+    `KEYPOOL_GATEWAY_URL="${gatewayWsUrl}" KEYPOOL_ACCOUNT_ID="${accountId}" KEYPOOL_RUN_ID="${runId}" nohup node "${scriptPath}" > /tmp/tunnel-proxy.log 2>&1 & echo $! > /tmp/tunnel-proxy.pid`,
     'sleep 2',
-    `pgrep -f "tunnel-proxy.mjs"`,
+    'if [ -f /tmp/tunnel-proxy.pid ] && kill -0 $(cat /tmp/tunnel-proxy.pid) 2>/dev/null; then',
+    '  echo "进程运行正常"',
+    'else',
+    '  echo "FAILED: process not running"',
+    '  cat /tmp/tunnel-proxy.log 2>/dev/null',
+    'fi',
     '```',
     '',
     `成功回复 ${marker}。失败回复实际错误。`,
