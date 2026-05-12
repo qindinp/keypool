@@ -2,7 +2,8 @@
   [string]$BaseUrl = 'http://127.0.0.1:9300',
   [string]$Model = 'mimo-v2.5-pro',
   [int]$TimeoutSec = 30,
-  [switch]$SkipChat
+  [switch]$SkipChat,
+  [switch]$SkipStream
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,13 @@ function Invoke-JsonPost($Path, $Body, [int]$Timeout = 30) {
   $url = "$BaseUrl$Path"
   $json = $Body | ConvertTo-Json -Depth 20
   Invoke-RestMethod -Method Post -Uri $url -ContentType 'application/json' -Body $json -TimeoutSec $Timeout
+}
+
+function Invoke-SsePost($Path, $Body, [int]$Timeout = 30) {
+  $url = "$BaseUrl$Path"
+  $json = $Body | ConvertTo-Json -Depth 20
+  $resp = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $url -ContentType 'application/json' -Headers @{ Accept = 'text/event-stream' } -Body $json -TimeoutSec $Timeout
+  return $resp.Content
 }
 
 $results = [ordered]@{
@@ -107,6 +115,58 @@ try {
       $message = $_.Exception.Message
       Write-Host "Anthropic non-stream failed: $message" -ForegroundColor Yellow
       Add-Check 'anthropic-messages-non-stream' $false @{ error = $message; body = $_.ErrorDetails.Message }
+    }
+
+    if (-not $SkipStream) {
+      Write-Step 'POST /v1/chat/completions stream'
+      $chatStreamBody = @{
+        model = $Model
+        messages = @(@{ role = 'user'; content = 'keypool openai stream smoke ping' })
+        stream = $true
+        max_tokens = 32
+      }
+      try {
+        $openaiStream = Invoke-SsePost '/v1/chat/completions' $chatStreamBody $TimeoutSec
+        $openaiLines = @($openaiStream -split "`n" | Where-Object { $_.Trim().StartsWith('data:') })
+        $openaiHasDone = [bool]($openaiLines | Where-Object { $_ -match '\[DONE\]' } | Select-Object -First 1)
+        $openaiSummary = [ordered]@{
+          data_lines = $openaiLines.Count
+          has_done = $openaiHasDone
+          sample = ($openaiLines | Select-Object -First 3)
+        }
+        $openaiSummary | ConvertTo-Json -Depth 10
+        Add-Check 'openai-chat-stream' ($openaiLines.Count -gt 0) $openaiSummary
+      } catch {
+        $message = $_.Exception.Message
+        Write-Host "OpenAI stream failed: $message" -ForegroundColor Yellow
+        Add-Check 'openai-chat-stream' $false @{ error = $message; body = $_.ErrorDetails.Message }
+      }
+
+      Write-Step 'POST /v1/messages stream'
+      $anthropicStreamBody = @{
+        model = $Model
+        max_tokens = 32
+        messages = @(@{ role = 'user'; content = 'keypool anthropic stream smoke ping' })
+        stream = $true
+      }
+      try {
+        $anthropicStream = Invoke-SsePost '/v1/messages' $anthropicStreamBody $TimeoutSec
+        $eventLines = @($anthropicStream -split "`n" | Where-Object { $_.Trim().StartsWith('event:') })
+        $dataLines = @($anthropicStream -split "`n" | Where-Object { $_.Trim().StartsWith('data:') })
+        $hasMessageStop = [bool]($eventLines | Where-Object { $_ -match 'message_stop' } | Select-Object -First 1)
+        $anthropicStreamSummary = [ordered]@{
+          event_lines = $eventLines.Count
+          data_lines = $dataLines.Count
+          has_message_stop = $hasMessageStop
+          sample = ($eventLines | Select-Object -First 5)
+        }
+        $anthropicStreamSummary | ConvertTo-Json -Depth 10
+        Add-Check 'anthropic-messages-stream' (($eventLines.Count -gt 0) -and $hasMessageStop) $anthropicStreamSummary
+      } catch {
+        $message = $_.Exception.Message
+        Write-Host "Anthropic stream failed: $message" -ForegroundColor Yellow
+        Add-Check 'anthropic-messages-stream' $false @{ error = $message; body = $_.ErrorDetails.Message }
+      }
     }
   }
 
