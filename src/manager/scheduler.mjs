@@ -162,6 +162,11 @@ export class Scheduler {
         }
         break;
 
+      case 'MANUAL_STOPPED':
+      case 'PAUSED':
+        // Human-initiated stop; scheduler must not auto-create or recover.
+        break;
+
       case 'FAILED':
         if (!retryable) {
           console.log(`⏸️ [${worker.account.id}] FAILED(${failureType}) 且不可重试 → 保持人工处理`);

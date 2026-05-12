@@ -31,6 +31,7 @@ export function readBody(req) {
 export function createProxyHandler(registry, sendTunnelRequest) {
   return async function handleProxy(req, res, body) {
     const startTime = Date.now();
+    const requestId = req.keypoolRequestId || req.headers['x-request-id'] || req.headers['x-keypool-request-id'] || null;
 
     // 解析 model
     let model = null;
@@ -57,7 +58,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         const tunnelResp = await sendTunnelRequest(upstream.tunnel, {
           method: req.method,
           path: req.url,
-          headers: { ...req.headers, host: undefined },
+          headers: { ...req.headers, host: undefined, ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
           body: body || null,
         }, { res });
 
@@ -78,11 +79,16 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         }
 
         const latencyMs = Date.now() - startTime;
-        registry.markProxySuccess(upstream.accountId, latencyMs);
+        const status = tunnelResp.status || 200;
+        if (status >= 400) {
+          registry.markProxyUpstreamError(upstream.accountId, status, tunnelResp.body);
+        } else {
+          registry.markProxySuccess(upstream.accountId, latencyMs);
+        }
         return;
       } catch (err) {
         registry.markProxyFailure(upstream.accountId, err.message);
-        console.error(`❌ tunnel proxy failed [${upstream.accountId}]: ${err.message}`);
+        console.error(`❌ tunnel proxy failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
         // 流式响应已开始写入时，无法再切换为错误 JSON 或 HTTP 回退
         if (res.headersSent) {
           if (!res.writableEnded) { try { res.end(); } catch {} }
@@ -114,6 +120,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
 
     // 转发 headers
     const headers = { ...req.headers };
+    if (requestId) headers['x-keypool-request-id'] = requestId;
     delete headers.host;
     delete headers['content-length'];
 
@@ -127,6 +134,8 @@ export function createProxyHandler(registry, sendTunnelRequest) {
       // 检查是否流式
       const contentType = response.headers.get('content-type') || '';
       const isStream = contentType.includes('text/event-stream');
+
+      let text = null;
 
       if (isStream) {
         // 流式透传
@@ -144,7 +153,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         res.end();
       } else {
         // 非流式
-        const text = await response.text();
+        text = await response.text();
         const outHeaders = {};
         response.headers.forEach((value, key) => {
           if (['transfer-encoding', 'connection', 'content-encoding'].includes(key)) return;
@@ -155,10 +164,15 @@ export function createProxyHandler(registry, sendTunnelRequest) {
       }
 
       const latencyMs = Date.now() - startTime;
-      registry.markProxySuccess(upstream.accountId, latencyMs);
+      if (response.status >= 400) {
+        const errBody = isStream ? '(streaming)' : text;
+        registry.markProxyUpstreamError(upstream.accountId, response.status, errBody);
+      } else {
+        registry.markProxySuccess(upstream.accountId, latencyMs);
+      }
     } catch (err) {
       registry.markProxyFailure(upstream.accountId, err.message);
-      console.error(`❌ proxy failed [${upstream.accountId}]: ${err.message}`);
+      console.error(`❌ proxy failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
 
       // 返回 502
       if (!res.headersSent) {

@@ -8,12 +8,16 @@
  */
 
 import { createServer } from 'node:http';
-import { PassThrough } from 'node:stream';
+import { PassThrough } from 'node:stream'; // kept for potential future use
 import { Registry } from './registry.mjs';
 import { createProxyHandler, readBody } from './proxy.mjs';
 import { createAdminHandler } from './admin.mjs';
 import { anthropicToOpenAI, openAIToAnthropic, openAIChunkToAnthropicEvents } from './adapter.mjs';
 import { createTunnelServer } from './tunnel.mjs';
+
+function makeRequestId() {
+  return `kp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 /**
  * 创建 Gateway
@@ -35,6 +39,9 @@ export function createGateway(config) {
   const httpServer = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
+      const requestId = req.headers['x-request-id'] || req.headers['x-keypool-request-id'] || makeRequestId();
+      req.keypoolRequestId = requestId;
+      res.setHeader('x-keypool-request-id', requestId);
 
       // Root — 返回 Gateway 状态（CCSwitch 等工具验证端点用）
       if ((url.pathname === '/' || url.pathname === '/v1') && req.method === 'GET') {
@@ -171,6 +178,7 @@ export function createGateway(config) {
       return;
     }
 
+    const requestId = req.keypoolRequestId || req.headers['x-request-id'] || req.headers['x-keypool-request-id'] || null;
     const isStream = !!anthropicBody.stream;
     const openaiReq = anthropicToOpenAI(anthropicBody);
     const model = anthropicBody.model || 'unknown';
@@ -189,8 +197,7 @@ export function createGateway(config) {
     if (upstream.tunnel && tunnel.sendProxyRequest) {
       try {
         if (isStream) {
-          // 流式：用 PassThrough 流接收 OpenAI SSE chunk，实时转换为 Anthropic SSE
-          const passthrough = new PassThrough();
+          // 流式：通过 onChunk 回调实时转换 OpenAI SSE → Anthropic SSE
           res.writeHead(200, {
             'content-type': 'text/event-stream',
             'cache-control': 'no-cache',
@@ -205,36 +212,52 @@ export function createGateway(config) {
           };
 
           let lineBuf = '';
-          passthrough.on('readable', () => {
-            let chunk;
-            while ((chunk = passthrough.read()) !== null) {
-              lineBuf += chunk.toString();
-              let nlIdx;
-              while ((nlIdx = lineBuf.indexOf('\n')) !== -1) {
-                const line = lineBuf.slice(0, nlIdx).trim();
-                lineBuf = lineBuf.slice(nlIdx + 1);
-                if (!line.startsWith('data: ')) continue;
-                const payload = line.slice(6).trim();
-                if (payload === '[DONE]') continue;
+
+          function onChunk(buf, isFirst, status, headers) {
+            // 每个 chunk 到达时同步处理
+            lineBuf += buf.toString();
+            let nlIdx;
+            while ((nlIdx = lineBuf.indexOf('\n')) !== -1) {
+              const line = lineBuf.slice(0, nlIdx).trim();
+              lineBuf = lineBuf.slice(nlIdx + 1);
+              if (!line.startsWith('data: ')) continue;
+              const payload = line.slice(6).trim();
+              if (payload === '[DONE]') continue;
+              try {
+                const oaiChunk = JSON.parse(payload);
+                const events = openAIChunkToAnthropicEvents(oaiChunk, state);
+                for (const event of events) {
+                  res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+                }
+              } catch (err) {
+                console.warn(`⚠️ SSE chunk parse error: ${err.message}`);
+              }
+            }
+          }
+
+          await tunnel.sendProxyRequest(upstream.tunnel, {
+            method: 'POST',
+            path: '/v1/chat/completions',
+            headers: { 'content-type': 'application/json', 'accept': 'text/event-stream', ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
+            body: openaiBody,
+          }, { onChunk });
+
+          // 处理 lineBuf 中可能残留的最后一行
+          if (lineBuf.trim()) {
+            const line = lineBuf.trim();
+            if (line.startsWith('data: ')) {
+              const payload = line.slice(6).trim();
+              if (payload !== '[DONE]') {
                 try {
                   const oaiChunk = JSON.parse(payload);
                   const events = openAIChunkToAnthropicEvents(oaiChunk, state);
                   for (const event of events) {
                     res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
                   }
-                } catch (err) {
-                  console.warn(`⚠️ SSE chunk parse error: ${err.message}`);
-                }
+                } catch {}
               }
             }
-          });
-
-          await tunnel.sendProxyRequest(upstream.tunnel, {
-            method: 'POST',
-            path: '/v1/chat/completions',
-            headers: { 'content-type': 'application/json', 'accept': 'text/event-stream' },
-            body: openaiBody,
-          }, { res: passthrough });
+          }
 
           if (state.started && !state.textClosed && !state.thinkingClosed) {
             res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } })}\n\n`);
@@ -246,7 +269,7 @@ export function createGateway(config) {
           const tunnelResp = await tunnel.sendProxyRequest(upstream.tunnel, {
             method: 'POST',
             path: '/v1/chat/completions',
-            headers: { 'content-type': 'application/json' },
+            headers: { 'content-type': 'application/json', ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
             body: openaiBody,
           });
           const oaiResp = JSON.parse(tunnelResp.body || '{}');
@@ -259,7 +282,7 @@ export function createGateway(config) {
         return;
       } catch (err) {
         registry.markProxyFailure(upstream.accountId, err.message);
-        console.error(`❌ tunnel anthropic proxy failed [${upstream.accountId}]: ${err.message}`);
+        console.error(`❌ tunnel anthropic proxy failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
         if (res.headersSent) {
           if (!res.writableEnded) { try { res.end(); } catch {} }
         } else {
@@ -283,7 +306,7 @@ export function createGateway(config) {
     try {
       response = await fetch(targetUrl, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'accept': isStream ? 'text/event-stream' : 'application/json' },
+        headers: { 'content-type': 'application/json', 'accept': isStream ? 'text/event-stream' : 'application/json', ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
         body: openaiBody,
       });
 

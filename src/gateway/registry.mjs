@@ -89,7 +89,8 @@ export class Registry {
   }
 
   /**
-   * 标记代理请求失败
+   * 标记代理请求失败（传输层错误：连接断开、超时等）
+   * 会将 healthOk 设为 false，影响路由选择
    */
   markProxyFailure(accountId, error) {
     const state = this.instances.get(accountId);
@@ -98,6 +99,19 @@ export class Registry {
     state.lastProxyError = error;
     state.healthOk = false;
     state.consecutiveFailures = (state.consecutiveFailures || 0) + 1;
+  }
+
+  /**
+   * 标记上游业务错误（upstream 返回 4xx/5xx）
+   * 不影响 healthOk（连接本身是通的）
+   */
+  markProxyUpstreamError(accountId, status, body) {
+    const state = this.instances.get(accountId);
+    if (!state) return;
+    state.lastUpstreamStatus = status;
+    state.lastUpstreamError = typeof body === 'string' ? body.slice(0, 500) : body;
+    state.lastUsedAt = new Date().toISOString();
+    // 不设 healthOk = false；连接正常，只是上游返回了业务错误
   }
 
   // ─── Agent 查询（兼容旧 Admin API） ───────────────────────

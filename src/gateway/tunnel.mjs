@@ -181,7 +181,13 @@ export function createTunnelServer(registry) {
       // 流式 chunk 响应
       if (msg.type === 'proxy_response_chunk') {
         const entry = pendingRequests.get(msg.id);
-        if (!entry) return; // 已超时或重连清理
+        if (!entry) {
+          console.log(`🔍 [tunnel] chunk dropped: id=${msg.id} chunkId=${msg.chunkId} (no pending entry)`);
+          return; // 已超时或重连清理
+        }
+        if (msg.chunkId === 0) {
+          console.log(`🔍 [tunnel] first chunk: id=${msg.id} status=${msg.status} chunkSize=${msg.chunk?.length || 0} hasRes=${!!entry.res} resType=${entry.res?.constructor?.name || 'none'}`);
+        }
 
         // 每次收到 chunk 都重置超时，避免长流式请求（SSE）被误杀
         clearTimeout(entry.timeout);
@@ -190,11 +196,13 @@ export function createTunnelServer(registry) {
         }, entry.timeoutMs);
 
         if (msg.chunkId === 0) {
-          // 首 chunk：含 status + headers，开始 HTTP 响应
+          // 首 chunk：含 status + headers
           entry.status = msg.status;
           entry.headers = msg.headers;
           entry.chunks = [];
-          if (entry.res && typeof entry.res.writeHead === 'function' && !entry.res.headersSent) {
+          // 只有当没有 onChunk 回调时，才自动写 HTTP head 和直接写 res
+          // 如果有 onChunk，由 onChunk 负责处理
+          if (!entry.onChunk && entry.res && typeof entry.res.writeHead === 'function' && !entry.res.headersSent) {
             entry.res.writeHead(msg.status, {
               'content-type': msg.headers?.['content-type'] || 'text/event-stream',
               'cache-control': 'no-cache',
@@ -202,9 +210,16 @@ export function createTunnelServer(registry) {
             });
           }
         }
-        // 解码 base64 chunk 并写入 HTTP response
+        // 解码 base64 chunk
         const buf = Buffer.from(msg.chunk, 'base64');
         if (entry.chunks) entry.chunks.push(buf);
+
+        // 调用 onChunk 回调（同步，用于 SSE 转换等场景）
+        if (entry.onChunk) {
+          try { entry.onChunk(buf, msg.chunkId === 0, msg.status, msg.headers); } catch (e) { console.error(`⚠️ onChunk error: ${e.message}`); }
+        }
+
+        // 写入 res（流式透传）
         if (entry.res && typeof entry.res.write === 'function' && !entry.res.writableEnded) {
           try { entry.res.write(buf); } catch {}
         }
@@ -214,10 +229,15 @@ export function createTunnelServer(registry) {
       // 流式响应结束
       if (msg.type === 'proxy_response_end') {
         const entry = pendingRequests.get(msg.id);
-        if (!entry) return;
+        if (!entry) {
+          console.log(`🔍 [tunnel] response_end dropped: id=${msg.id} (no pending entry)`);
+          return;
+        }
+        console.log(`🔍 [tunnel] response_end: id=${msg.id} totalChunks=${msg.totalChunks} chunksCollected=${entry.chunks?.length || 0}`);
         pendingRequests.delete(msg.id);
         clearTimeout(entry.timeout);
-        if (entry.res && typeof entry.res.end === 'function' && !entry.res.writableEnded) {
+        // 如果没有 onChunk，由 res 直接管理结束；否则由调用方管理
+        if (!entry.onChunk && entry.res && typeof entry.res.end === 'function' && !entry.res.writableEnded) {
           entry.res.end();
         }
         // 拼接 body 供非 chunk 场景使用
@@ -282,19 +302,24 @@ export function createTunnelServer(registry) {
 
   // ─── 请求推送 ────────────────────────────────────────────
 
-  /** @type {Map<string, { ws: WebSocket, resolve: Function, reject: Function, timeout: NodeJS.Timeout, res?: object, chunks?: Buffer[], status?: number, headers?: object }>} */
+  /** @type {Map<string, { ws: WebSocket, resolve: Function, reject: Function, timeout: NodeJS.Timeout, res?: object, onChunk?: Function, chunks?: Buffer[], status?: number, headers?: object }>} */
   const pendingRequests = new Map();
 
   /**
    * 通过 tunnel 发送代理请求
    * @param {WebSocket} ws - tunnel 连接
    * @param {object} req - { method, path, headers, body }
-   * @param {object} opts - { timeoutMs, res } res 为 HTTP response 对象时启用流式透传
+   * @param {object} opts - { timeoutMs, res, onChunk } res 为 HTTP response 对象时启用流式透传；onChunk(chunkBuf, isFirst, status, headers) 在每个 chunk 到达时同步调用
    * @returns {Promise<{ status: number, headers: object, body: string }>}
    */
   function sendProxyRequest(ws, req, opts = {}) {
     const timeoutMs = opts.timeoutMs || 120_000;
     const res = opts.res || null;
+    const onChunk = opts.onChunk || null;
+
+    if (res && onChunk) {
+      return Promise.reject(new Error('sendProxyRequest callback mode and res pipe mode are mutually exclusive; cannot combine res with onChunk'));
+    }
 
     // ─── 防御：ws 已关闭或正在关闭，立即拒绝 ─────────
     if (ws.readyState !== 1 /* WebSocket.OPEN */) {
@@ -317,7 +342,7 @@ export function createTunnelServer(registry) {
       }, timeoutMs);
 
       const entry = {
-        ws, resolve, reject: cleanupAndReject, timeout, timeoutMs, res,
+        ws, resolve, reject: cleanupAndReject, timeout, timeoutMs, res, onChunk,
         chunks: [], status: null, headers: null,
       };
       pendingRequests.set(id, entry);

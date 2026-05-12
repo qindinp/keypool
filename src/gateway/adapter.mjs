@@ -212,6 +212,7 @@ export function openAIChunkToAnthropicEvents(chunk, state) {
 
   if (!state.started) {
     state.started = true;
+    if (state.blockIndex === undefined) state.blockIndex = 0;
     events.push({
       type: 'message_start',
       message: {

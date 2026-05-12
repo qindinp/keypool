@@ -87,7 +87,7 @@ export function createAdminHandler(registry, context = {}) {
       return;
     }
 
-    const actionMatch = url.pathname.match(/^\/admin\/api\/accounts\/([^/]+)\/(deploy|recover|destroy)$/);
+    const actionMatch = url.pathname.match(/^\/admin\/api\/accounts\/([^/]+)\/(deploy|recover|destroy|stop)$/);
     if (actionMatch && req.method === 'POST') {
       const [, accountId, action] = actionMatch;
       const result = await runAccountAction(context.manager, accountId, action);
@@ -215,6 +215,8 @@ async function runAccountAction(manager, accountId, action) {
       worker.instance = null;
       worker.state = 'DESTROYED';
       worker.registry.setInstanceStatus(worker.account.id, 'DESTROYED');
+    } else if (action === 'stop') {
+      await worker.manualStop();
     }
 
     return {

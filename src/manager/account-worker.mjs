@@ -227,6 +227,34 @@ export class AccountWorker {
     }
   }
 
+  async manualStop() {
+    console.log(`🛑 [${this.account.id}] 手动停止`);
+
+    try {
+      await this.api.destroyInstance(this.account.cookie);
+      console.log(`🗑️ [${this.account.id}] 实例已销毁`);
+    } catch (err) {
+      console.warn(`⚠️ [${this.account.id}] 销毁实例失败（可能已不存在）:`, err.message);
+    }
+
+    this.instance = null;
+    this.setState('MANUAL_STOPPED', {
+      verified: false,
+      healthOk: false,
+      tunnel: null,
+      tunnelAccountId: null,
+      tunnelRunId: null,
+      tunnelConnectedAt: null,
+      retryable: false,
+      failureType: 'manual_stop',
+      lastManualStopAt: new Date().toISOString(),
+      lastDeployError: null,
+      deployStage: null,
+      deployStatus: null,
+    });
+    this.cooldownUntil = 0;
+  }
+
   async recover() {
     this.setState('RECOVERING');
 
