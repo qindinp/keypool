@@ -144,6 +144,19 @@ export function createGateway(config) {
       }
     }
 
+    if (models.size === 0 && upstreams.length > 0) {
+      // 部分 tunnel 上游不实现 /v1/models；仍可正常转发 chat 请求。
+      // 返回常用 Claude 模型，避免 CCSwitch / SDK 因空模型列表误判 Base URL 无效。
+      for (const id of [
+        'claude-sonnet-4-20250514',
+        'claude-opus-4-20250514',
+        'claude-3-7-sonnet-20250219',
+        'claude-3-5-sonnet-20241022',
+      ]) {
+        models.set(id, { id, object: 'model', owned_by: 'keypool' });
+      }
+    }
+
     return [...models.values()];
   }
 
