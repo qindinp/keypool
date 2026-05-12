@@ -183,6 +183,12 @@ export function createTunnelServer(registry) {
         const entry = pendingRequests.get(msg.id);
         if (!entry) return; // 已超时或重连清理
 
+        // 每次收到 chunk 都重置超时，避免长流式请求（SSE）被误杀
+        clearTimeout(entry.timeout);
+        entry.timeout = setTimeout(() => {
+          entry.reject(new Error('tunnel proxy timeout'));
+        }, entry.timeoutMs);
+
         if (msg.chunkId === 0) {
           // 首 chunk：含 status + headers，开始 HTTP 响应
           entry.status = msg.status;
@@ -257,11 +263,7 @@ export function createTunnelServer(registry) {
       for (const [id, entry] of pendingRequests) {
         if (entry.ws !== ws) continue;
         clearTimeout(entry.timeout);
-        if (entry.res && !entry.res.writableEnded) {
-          try { entry.res.end(); } catch {}
-        }
         entry.reject(new Error('tunnel connection closed'));
-        pendingRequests.delete(id);
       }
     });
 
@@ -294,27 +296,46 @@ export function createTunnelServer(registry) {
     const timeoutMs = opts.timeoutMs || 120_000;
     const res = opts.res || null;
 
+    // ─── 防御：ws 已关闭或正在关闭，立即拒绝 ─────────
+    if (ws.readyState !== 1 /* WebSocket.OPEN */) {
+      return Promise.reject(new Error('tunnel connection not open'));
+    }
+
     return new Promise((resolve, reject) => {
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const timeout = setTimeout(() => {
+
+      const cleanupAndReject = (err) => {
         pendingRequests.delete(id);
         if (res && !res.writableEnded) {
           try { res.end(); } catch {}
         }
-        reject(new Error('tunnel proxy timeout'));
+        reject(err);
+      };
+
+      const timeout = setTimeout(() => {
+        cleanupAndReject(new Error('tunnel proxy timeout'));
       }, timeoutMs);
 
-      const entry = { ws, resolve, reject, timeout, res, chunks: [], status: null, headers: null };
+      const entry = {
+        ws, resolve, reject: cleanupAndReject, timeout, timeoutMs, res,
+        chunks: [], status: null, headers: null,
+      };
       pendingRequests.set(id, entry);
 
-      ws.send(JSON.stringify({
-        type: 'proxy_request',
-        id,
-        method: req.method,
-        path: req.path,
-        headers: req.headers,
-        body: req.body || null,
-      }));
+      try {
+        ws.send(JSON.stringify({
+          type: 'proxy_request',
+          id,
+          method: req.method,
+          path: req.path,
+          headers: req.headers,
+          body: req.body || null,
+        }));
+      } catch (err) {
+        // ws.send 失败（连接已断开/缓冲区满），立即清理
+        clearTimeout(timeout);
+        cleanupAndReject(new Error(`tunnel send failed: ${err.message}`));
+      }
     });
   }
 
