@@ -59,20 +59,16 @@ export function createProxyHandler(registry, sendTunnelRequest) {
           path: req.url,
           headers: { ...req.headers, host: undefined },
           body: body || null,
-        });
+        }, { res });
 
-        const contentType = tunnelResp.headers?.['content-type'] || 'application/json';
-        const isStream = contentType.includes('text/event-stream');
-
-        res.writeHead(tunnelResp.status || 200, {
-          'content-type': contentType,
-          'cache-control': 'no-cache',
-        });
-
-        if (isStream && tunnelResp.body) {
-          // 流式响应：body 已被远端缓冲，直接写入
-          res.end(tunnelResp.body);
-        } else {
+        // 当 opts.res 被传入时，tunnel.mjs 会在收到 chunk 时直接写入 HTTP 响应（流式透传）。
+        // 此时 res.headersSent 已为 true，不应再二次写入。
+        if (!res.headersSent) {
+          const contentType = tunnelResp.headers?.['content-type'] || 'application/json';
+          res.writeHead(tunnelResp.status || 200, {
+            'content-type': contentType,
+            'cache-control': 'no-cache',
+          });
           res.end(tunnelResp.body || '');
         }
 
@@ -82,11 +78,14 @@ export function createProxyHandler(registry, sendTunnelRequest) {
       } catch (err) {
         registry.markProxyFailure(upstream.accountId, err.message);
         console.error(`❌ tunnel proxy failed [${upstream.accountId}]: ${err.message}`);
+        // 流式响应已开始写入时，无法再切换为错误 JSON 或 HTTP 回退
+        if (res.headersSent) {
+          if (!res.writableEnded) { try { res.end(); } catch {} }
+          return;
+        }
         // 回退到 HTTP 直连（如果有）
         if (!upstream.proxyUrl && !upstream.baseUrl && !upstream.localUrl) {
-          if (!res.headersSent) {
-            res.writeHead(502, { 'content-type': 'application/json' });
-          }
+          res.writeHead(502, { 'content-type': 'application/json' });
           res.end(JSON.stringify({
             error: { message: err.message || 'Tunnel proxy failed', type: 'proxy_error' },
           }));
