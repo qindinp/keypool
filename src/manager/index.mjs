@@ -12,6 +12,7 @@ import { AccountWorker } from './account-worker.mjs';
 import { Scheduler } from './scheduler.mjs';
 import { createDeployer } from './deployer.mjs';
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const DEFAULT_PUBLIC_WS_URL = 'wss://pc-20250301fuan.tail59e491.ts.net/tunnel';
 
 export function createManager(registry, opts = {}) {
