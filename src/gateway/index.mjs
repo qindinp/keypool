@@ -8,6 +8,7 @@
  */
 
 import { createServer } from 'node:http';
+import { PassThrough } from 'node:stream';
 import { Registry } from './registry.mjs';
 import { createProxyHandler, readBody } from './proxy.mjs';
 import { createAdminHandler } from './admin.mjs';
@@ -128,15 +129,9 @@ export function createGateway(config) {
     // ─── Tunnel 模式 ───────────────────────────────────────
     if (upstream.tunnel && tunnel.sendProxyRequest) {
       try {
-        const tunnelResp = await tunnel.sendProxyRequest(upstream.tunnel, {
-          method: 'POST',
-          path: '/v1/chat/completions',
-          headers: { 'content-type': 'application/json', 'accept': isStream ? 'text/event-stream' : 'application/json' },
-          body: openaiBody,
-        });
-
         if (isStream) {
-          // Tunnel 返回的是缓冲的完整响应，需要重新解析为 Anthropic SSE
+          // 流式：用 PassThrough 流接收 OpenAI SSE chunk，实时转换为 Anthropic SSE
+          const passthrough = new PassThrough();
           res.writeHead(200, {
             'content-type': 'text/event-stream',
             'cache-control': 'no-cache',
@@ -150,23 +145,37 @@ export function createGateway(config) {
             model,
           };
 
-          // tunnelResp.body 是完整的 SSE 文本
-          const lines = (tunnelResp.body || '').split('\n');
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data: ')) continue;
-            const payload = trimmed.slice(6).trim();
-            if (payload === '[DONE]') continue;
-            try {
-              const oaiChunk = JSON.parse(payload);
-              const events = openAIChunkToAnthropicEvents(oaiChunk, state);
-              for (const event of events) {
-                res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+          let lineBuf = '';
+          passthrough.on('readable', () => {
+            let chunk;
+            while ((chunk = passthrough.read()) !== null) {
+              lineBuf += chunk.toString();
+              let nlIdx;
+              while ((nlIdx = lineBuf.indexOf('\n')) !== -1) {
+                const line = lineBuf.slice(0, nlIdx).trim();
+                lineBuf = lineBuf.slice(nlIdx + 1);
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') continue;
+                try {
+                  const oaiChunk = JSON.parse(payload);
+                  const events = openAIChunkToAnthropicEvents(oaiChunk, state);
+                  for (const event of events) {
+                    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+                  }
+                } catch (err) {
+                  console.warn(`⚠️ SSE chunk parse error: ${err.message}`);
+                }
               }
-            } catch (err) {
-              console.warn(`⚠️ SSE chunk parse error: ${err.message}`);
             }
-          }
+          });
+
+          await tunnel.sendProxyRequest(upstream.tunnel, {
+            method: 'POST',
+            path: '/v1/chat/completions',
+            headers: { 'content-type': 'application/json', 'accept': 'text/event-stream' },
+            body: openaiBody,
+          }, { res: passthrough });
 
           if (state.started && !state.textClosed && !state.thinkingClosed) {
             res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } })}\n\n`);
@@ -175,6 +184,12 @@ export function createGateway(config) {
           res.end();
         } else {
           // 非流式
+          const tunnelResp = await tunnel.sendProxyRequest(upstream.tunnel, {
+            method: 'POST',
+            path: '/v1/chat/completions',
+            headers: { 'content-type': 'application/json' },
+            body: openaiBody,
+          });
           const oaiResp = JSON.parse(tunnelResp.body || '{}');
           const anthropicResp = openAIToAnthropic(oaiResp, model);
           res.writeHead(200, { 'content-type': 'application/json' });
@@ -186,8 +201,12 @@ export function createGateway(config) {
       } catch (err) {
         registry.markProxyFailure(upstream.accountId, err.message);
         console.error(`❌ tunnel anthropic proxy failed [${upstream.accountId}]: ${err.message}`);
-        res.writeHead(502, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
+        if (res.headersSent) {
+          if (!res.writableEnded) { try { res.end(); } catch {} }
+        } else {
+          res.writeHead(502, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
+        }
         return;
       }
     }
