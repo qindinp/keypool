@@ -131,6 +131,19 @@ export class WsClient {
         this._handleRequest(msg);
         break;
 
+      case 'error':
+        if (msg.error && (
+          msg.error.includes('superseded') ||
+          msg.error.includes('replaced')
+        )) {
+          console.warn('[ws-client] Gateway 通知当前 run 已被替换，停止重连:', msg.error);
+          this._closed = true;
+          this._stopPing();
+          this._status = 'disconnected';
+          this._rejectAllPending(msg.error);
+        }
+        break;
+
       default:
         break;
     }
