@@ -14,7 +14,7 @@ import { createProxyHandler, readBody } from './proxy.mjs';
 import { createAdminHandler } from './admin.mjs';
 import { anthropicToOpenAI, openAIToAnthropic, openAIChunkToAnthropicEvents } from './adapter.mjs';
 import { createTunnelServer } from './tunnel.mjs';
-import { stripModelPrefix } from './proxy.mjs';
+import { stripModelPrefix, stripUnsupportedParams } from './proxy.mjs';
 
 function makeRequestId() {
   return `kp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -190,7 +190,15 @@ export function createGateway(config) {
       openaiReq.model = strippedOpenAIModel;
       console.log(`🔧 anthropic adapter strip model prefix: "${originalOpenAIModel}" → "${strippedOpenAIModel}"`);
     }
-    const openaiBody = JSON.stringify(openaiReq);
+    // Strip unsupported params for MiMo upstream
+    const paramResult = stripUnsupportedParams(JSON.stringify(openaiReq));
+    let openaiBody;
+    if (paramResult) {
+      openaiBody = paramResult.strippedBody;
+      console.log(`🔧 anthropic adapter strip unsupported params: ${paramResult.removedParams.join(', ')}`);
+    } else {
+      openaiBody = JSON.stringify(openaiReq);
+    }
 
     const upstream = registry.chooseVerifiedUpstream(openaiReq.model);
     if (!upstream) {

@@ -1,0 +1,63 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { stripUnsupportedParams } from '../src/gateway/proxy.mjs';
+
+describe('stripUnsupportedParams', () => {
+  it('strips n parameter', () => {
+    const result = stripUnsupportedParams('{"model":"mimo-v2.5-pro","n":2,"messages":[]}');
+    assert.ok(result);
+    assert.equal(JSON.parse(result.strippedBody).n, undefined);
+    assert.deepEqual(result.removedParams, ['n=2']);
+  });
+
+  it('strips logprobs and top_logprobs', () => {
+    const result = stripUnsupportedParams('{"model":"mimo-v2.5-pro","logprobs":true,"top_logprobs":5,"messages":[]}');
+    assert.ok(result);
+    const parsed = JSON.parse(result.strippedBody);
+    assert.equal(parsed.logprobs, undefined);
+    assert.equal(parsed.top_logprobs, undefined);
+    assert.equal(parsed.model, 'mimo-v2.5-pro');
+  });
+
+  it('strips multiple unsupported params together', () => {
+    const result = stripUnsupportedParams('{"model":"mimo-v2.5-pro","n":3,"logprobs":true,"top_logprobs":10,"temperature":0.7,"messages":[]}');
+    assert.ok(result);
+    const parsed = JSON.parse(result.strippedBody);
+    assert.equal(parsed.n, undefined);
+    assert.equal(parsed.logprobs, undefined);
+    assert.equal(parsed.top_logprobs, undefined);
+    assert.equal(parsed.temperature, 0.7); // supported param kept
+    assert.equal(parsed.model, 'mimo-v2.5-pro');
+  });
+
+  it('returns null when no unsupported params present', () => {
+    const result = stripUnsupportedParams('{"model":"mimo-v2.5-pro","temperature":0.7,"messages":[]}');
+    assert.equal(result, null);
+  });
+
+  it('returns null for null/undefined/empty body', () => {
+    assert.equal(stripUnsupportedParams(null), null);
+    assert.equal(stripUnsupportedParams(undefined), null);
+    assert.equal(stripUnsupportedParams(''), null);
+  });
+
+  it('returns null for invalid JSON', () => {
+    assert.equal(stripUnsupportedParams('not json'), null);
+  });
+
+  it('preserves all supported params', () => {
+    const body = JSON.stringify({
+      model: 'mimo-v2.5-pro',
+      messages: [{ role: 'user', content: 'hello' }],
+      temperature: 0.5,
+      top_p: 0.9,
+      max_tokens: 100,
+      stream: true,
+      stop: ['\n'],
+      presence_penalty: 0.3,
+      frequency_penalty: 0.2,
+    });
+    const result = stripUnsupportedParams(body);
+    assert.equal(result, null); // nothing to strip
+  });
+});

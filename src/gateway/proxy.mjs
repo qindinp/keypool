@@ -29,6 +29,38 @@ export function stripModelPrefix(model) {
 }
 
 /**
+ * MiMo API 不支持的 OpenAI 参数列表
+ * 这些参数会被 proxy 自动从请求体中移除，避免上游返回 "Param Incorrect"
+ */
+const MIMO_UNSUPPORTED_PARAMS = [
+  'n',           // 不支持多候选回复
+  'logprobs',    // 不支持 logprobs
+  'top_logprobs',// 不支持 top_logprobs
+];
+
+/**
+ * Strip unsupported params from request body for MiMo upstream
+ * Returns { strippedBody, removedParams } or null if nothing changed
+ */
+export function stripUnsupportedParams(body) {
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body);
+    const removed = [];
+    for (const key of MIMO_UNSUPPORTED_PARAMS) {
+      if (key in parsed) {
+        removed.push(`${key}=${JSON.stringify(parsed[key])}`);
+        delete parsed[key];
+      }
+    }
+    if (removed.length === 0) return null;
+    return { strippedBody: JSON.stringify(parsed), removedParams: removed };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 读取请求体
  * @param {import('node:http').IncomingMessage} req
  * @returns {Promise<string>}
@@ -68,6 +100,13 @@ export function createProxyHandler(registry, sendTunnelRequest) {
           console.log(`🔧 proxy strip model prefix: "${model}" → "${strippedModel}"`);
         }
         model = strippedModel;
+
+        // Strip unsupported params (n, logprobs, etc.) for MiMo upstream
+        const paramResult = stripUnsupportedParams(strippedBody);
+        if (paramResult) {
+          strippedBody = paramResult.strippedBody;
+          console.log(`🔧 proxy strip unsupported params: ${paramResult.removedParams.join(', ')}`);
+        }
       } catch (err) { console.warn(`⚠️ proxy body parse error: ${err.message}`); }
     }
 
