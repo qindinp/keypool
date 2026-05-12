@@ -88,9 +88,22 @@ export class AccountWorker {
       deployTimeline: Array.isArray(result?.timeline) ? result.timeline : [],
     };
 
-    if (result?.verified) {
-      this.setState('ACTIVE', deployMeta);
-      console.log(`✅ [${this.account.id}] 部署完成并验证可用 (${result.proxyUrl || 'tunnel'})`);
+    const currentState = this.registry.getInstanceState(this.account.id) || {};
+    const tunnelAlreadyConnected = !!currentState.tunnel && (!result?.runId || !currentState.tunnelRunId || currentState.tunnelRunId === result.runId);
+
+    if (result?.verified || tunnelAlreadyConnected) {
+      this.setState('ACTIVE', {
+        ...deployMeta,
+        // tunnel 注册可能早于 deploy() 返回；不要用 deploy() 的 pending 元数据覆盖已验证状态。
+        verified: true,
+        healthOk: true,
+        lastVerifiedAt: currentState.lastVerifiedAt || new Date().toISOString(),
+        tunnel: currentState.tunnel || null,
+        tunnelAccountId: currentState.tunnelAccountId || this.account.id,
+        tunnelRunId: currentState.tunnelRunId || result?.runId || null,
+        tunnelConnectedAt: currentState.tunnelConnectedAt || new Date().toISOString(),
+      });
+      console.log(`✅ [${this.account.id}] 部署完成并验证可用 (${result?.proxyUrl || 'tunnel'})`);
       return result;
     }
 

@@ -103,10 +103,17 @@ export function createTunnelServer(registry) {
     ws.on('message', (data) => {
       let msg;
       try { msg = JSON.parse(data.toString()); } catch { return; }
+      // 任何有效消息都证明连接仍然活着，避免长请求期间只因 pong 抖动误杀 tunnel。
+      lastPong = Date.now();
 
       // 注册
       if (msg.type === 'register' && msg.accountId) {
         authenticated = true;
+        const previousState = registry.getInstanceState(msg.accountId);
+        const previousTunnel = previousState?.tunnel;
+        if (previousTunnel && previousTunnel !== ws) {
+          try { previousTunnel.close(1000, 'replaced by newer tunnel'); } catch {}
+        }
         registry.updateInstanceState(msg.accountId, {
           tunnel: ws,
           tunnelAccountId: msg.accountId,
@@ -209,15 +216,19 @@ export function createTunnelServer(registry) {
         });
         console.log(`🔌 [tunnel:${accountId}] 连接断开`);
       }
-      // 清理所有 pending requests（含 chunk 流）
+      // 清理当前连接上的 pending requests（含 chunk 流）。
+      // 注意：pendingRequests 是整个 tunnel server 共享的；同一账号重连或旧连接关闭时，
+      // 不能清掉其他仍然存活连接上的请求，否则复杂请求会被无关 close 打断为
+      // `tunnel connection closed`。
       for (const [id, entry] of pendingRequests) {
+        if (entry.ws !== ws) continue;
         clearTimeout(entry.timeout);
         if (entry.res && !entry.res.writableEnded) {
           try { entry.res.end(); } catch {}
         }
         entry.reject(new Error('tunnel connection closed'));
+        pendingRequests.delete(id);
       }
-      pendingRequests.clear();
     });
 
     ws.on('error', (err) => {
@@ -235,7 +246,7 @@ export function createTunnelServer(registry) {
 
   // ─── 请求推送 ────────────────────────────────────────────
 
-  /** @type {Map<string, { resolve: Function, reject: Function, timeout: NodeJS.Timeout, res?: object, chunks?: Buffer[], status?: number, headers?: object }>} */
+  /** @type {Map<string, { ws: WebSocket, resolve: Function, reject: Function, timeout: NodeJS.Timeout, res?: object, chunks?: Buffer[], status?: number, headers?: object }>} */
   const pendingRequests = new Map();
 
   /**
@@ -259,7 +270,7 @@ export function createTunnelServer(registry) {
         reject(new Error('tunnel proxy timeout'));
       }, timeoutMs);
 
-      const entry = { resolve, reject, timeout, res, chunks: [], status: null, headers: null };
+      const entry = { ws, resolve, reject, timeout, res, chunks: [], status: null, headers: null };
       pendingRequests.set(id, entry);
 
       ws.send(JSON.stringify({
