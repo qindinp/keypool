@@ -55,6 +55,27 @@ function readSkillFiles() {
  */
 export function createTunnelServer(registry) {
   const wss = new WebSocketServer({ noServer: true });
+  /** @type {Map<string, Set<string>>} */
+  const supersededRunIds = new Map();
+
+  function markRunSuperseded(accountId, runId) {
+    if (!accountId || !runId) return;
+    let set = supersededRunIds.get(accountId);
+    if (!set) {
+      set = new Set();
+      supersededRunIds.set(accountId, set);
+    }
+    set.add(runId);
+    // 简单限长，避免长时间运行时无界增长。
+    if (set.size > 20) {
+      const first = set.values().next().value;
+      set.delete(first);
+    }
+  }
+
+  function isRunSuperseded(accountId, runId) {
+    return !!(accountId && runId && supersededRunIds.get(accountId)?.has(runId));
+  }
 
   function handleUpgrade(req, socket, head) {
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -108,16 +129,29 @@ export function createTunnelServer(registry) {
 
       // 注册
       if (msg.type === 'register' && msg.accountId) {
-        authenticated = true;
+        const incomingRunId = runId || msg.runId || '';
         const previousState = registry.getInstanceState(msg.accountId);
         const previousTunnel = previousState?.tunnel;
+        const previousRunId = previousState?.tunnelRunId || '';
+
+        if (isRunSuperseded(msg.accountId, incomingRunId)) {
+          console.warn(`⛔ [tunnel:${msg.accountId}] 拒绝已被替换的旧 runId=${incomingRunId}`);
+          try { ws.send(JSON.stringify({ type: 'error', error: 'superseded tunnel run' })); } catch {}
+          try { ws.close(1000, 'superseded tunnel run'); } catch {}
+          return;
+        }
+
+        authenticated = true;
         if (previousTunnel && previousTunnel !== ws) {
+          if (previousRunId && previousRunId !== incomingRunId) {
+            markRunSuperseded(msg.accountId, previousRunId);
+          }
           try { previousTunnel.close(1000, 'replaced by newer tunnel'); } catch {}
         }
         registry.updateInstanceState(msg.accountId, {
           tunnel: ws,
           tunnelAccountId: msg.accountId,
-          tunnelRunId: runId,
+          tunnelRunId: incomingRunId,
           tunnelConnectedAt: new Date().toISOString(),
           verified: true,
           healthOk: true,

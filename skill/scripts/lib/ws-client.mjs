@@ -79,7 +79,16 @@ export class WsClient {
     });
 
     this._ws.on('close', (code, reason) => {
-      console.log('[ws-client] 连接关闭:', code, reason?.toString());
+      const reasonText = reason?.toString?.() || '';
+      console.log('[ws-client] 连接关闭:', code, reasonText);
+      if (reasonText.includes('replaced by newer tunnel') || reasonText.includes('superseded tunnel run')) {
+        console.warn('[ws-client] 当前 run 已被新 tunnel 替换，停止自动重连');
+        this._closed = true;
+        this._stopPing();
+        this._status = 'disconnected';
+        this._rejectAllPending(reasonText || 'tunnel run superseded');
+        return;
+      }
       this._onDisconnect();
     });
 
