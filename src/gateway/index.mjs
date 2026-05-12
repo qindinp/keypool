@@ -36,6 +36,26 @@ export function createGateway(config) {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
 
+      // Root — 返回 Gateway 状态（CCSwitch 等工具验证端点用）
+      if (url.pathname === '/' && req.method === 'GET') {
+        const verifiedCount = registry.getVerifiedUpstreams().length;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          name: 'KeyPool Gateway',
+          version: '1.0.0',
+          status: 'ok',
+          endpoints: {
+            health: '/health',
+            models: '/v1/models',
+            chat: '/v1/chat/completions',
+            messages: '/v1/messages',
+            admin: '/admin',
+          },
+          upstreams: verifiedCount,
+        }));
+        return;
+      }
+
       // Admin / Health
       if (url.pathname === '/health' || url.pathname.startsWith('/admin')) {
         return adminHandler(req, res);
@@ -80,21 +100,47 @@ export function createGateway(config) {
 
     for (const upstream of upstreams) {
       const baseUrl = upstream.proxyUrl || upstream.baseUrl || upstream.localUrl;
-      if (!baseUrl) continue;
-      try {
-        const res = await fetch(new URL('/v1/models', baseUrl).toString());
-        if (!res.ok) continue;
-        const payload = await res.json();
-        for (const item of Array.isArray(payload?.data) ? payload.data : []) {
-          if (!item?.id) continue;
-          models.set(item.id, {
-            id: item.id,
-            object: item.object || 'model',
-            owned_by: item.owned_by || upstream.accountId,
-          });
+
+      // HTTP 直连模式
+      if (baseUrl) {
+        try {
+          const res = await fetch(new URL('/v1/models', baseUrl).toString());
+          if (!res.ok) continue;
+          const payload = await res.json();
+          for (const item of Array.isArray(payload?.data) ? payload.data : []) {
+            if (!item?.id) continue;
+            models.set(item.id, {
+              id: item.id,
+              object: item.object || 'model',
+              owned_by: item.owned_by || upstream.accountId,
+            });
+          }
+        } catch (err) {
+          console.warn(`⚠️ collectModels [${upstream.accountId}]: ${err.message}`);
         }
-      } catch (err) {
-        console.warn(`⚠️ collectModels [${upstream.accountId}]: ${err.message}`);
+        continue;
+      }
+
+      // Tunnel 模式：通过 tunnel 查询远端 /v1/models
+      if (upstream.tunnel) {
+        try {
+          const resp = await tunnel.sendProxyRequest(upstream.tunnel, {
+            method: 'GET',
+            path: '/v1/models',
+            headers: { 'content-type': 'application/json' },
+          }, { timeoutMs: 10_000 });
+          const payload = JSON.parse(resp.body || '{}');
+          for (const item of Array.isArray(payload?.data) ? payload.data : []) {
+            if (!item?.id) continue;
+            models.set(item.id, {
+              id: item.id,
+              object: item.object || 'model',
+              owned_by: item.owned_by || upstream.accountId,
+            });
+          }
+        } catch (err) {
+          console.warn(`⚠️ collectModels [tunnel:${upstream.accountId}]: ${err.message}`);
+        }
       }
     }
 
