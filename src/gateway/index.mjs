@@ -37,7 +37,7 @@ export function createGateway(config) {
       const url = new URL(req.url, `http://${req.headers.host}`);
 
       // Root — 返回 Gateway 状态（CCSwitch 等工具验证端点用）
-      if (url.pathname === '/' && req.method === 'GET') {
+      if ((url.pathname === '/' || url.pathname === '/v1') && req.method === 'GET') {
         const verifiedCount = registry.getVerifiedUpstreams().length;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
