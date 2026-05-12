@@ -388,15 +388,22 @@ function buildStartPrompt(marker, gatewayWsUrl, accountId, runId) {
 
 export function createDeployer(config) {
   const api = createMimoApi({ sleep });
-  let deployQueue = Promise.resolve();
+  const deployQueues = new Map();
 
   function enqueueDeploy(accountId, task) {
+    const previous = deployQueues.get(accountId) || Promise.resolve();
     const run = async () => {
-      console.log(`[INFO] [deploy:${accountId}] 等待全局部署锁`);
+      console.log(`[INFO] [deploy:${accountId}] 等待账号级部署锁`);
       return task();
     };
-    const next = deployQueue.then(run, run);
-    deployQueue = next.catch(() => {});
+    const next = previous.then(run, run);
+    const guarded = next.catch(() => {});
+    deployQueues.set(accountId, guarded);
+    guarded.finally(() => {
+      if (deployQueues.get(accountId) === guarded) {
+        deployQueues.delete(accountId);
+      }
+    });
     return next;
   }
 
