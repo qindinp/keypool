@@ -194,7 +194,7 @@ export function createTunnelServer(registry) {
           entry.status = msg.status;
           entry.headers = msg.headers;
           entry.chunks = [];
-          if (entry.res && !entry.res.headersSent) {
+          if (entry.res && typeof entry.res.writeHead === 'function' && !entry.res.headersSent) {
             entry.res.writeHead(msg.status, {
               'content-type': msg.headers?.['content-type'] || 'text/event-stream',
               'cache-control': 'no-cache',
@@ -205,7 +205,7 @@ export function createTunnelServer(registry) {
         // 解码 base64 chunk 并写入 HTTP response
         const buf = Buffer.from(msg.chunk, 'base64');
         if (entry.chunks) entry.chunks.push(buf);
-        if (entry.res && !entry.res.writableEnded) {
+        if (entry.res && typeof entry.res.write === 'function' && !entry.res.writableEnded) {
           try { entry.res.write(buf); } catch {}
         }
         return;
@@ -217,7 +217,7 @@ export function createTunnelServer(registry) {
         if (!entry) return;
         pendingRequests.delete(msg.id);
         clearTimeout(entry.timeout);
-        if (entry.res && !entry.res.writableEnded) {
+        if (entry.res && typeof entry.res.end === 'function' && !entry.res.writableEnded) {
           entry.res.end();
         }
         // 拼接 body 供非 chunk 场景使用
