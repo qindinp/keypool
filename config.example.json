@@ -8,5 +8,11 @@
   "retryMaxDelay": 60000,
   "chatTimeout": 120000,
   "wsConnectTimeout": 30000,
-  "giteeToken": "0cacba5e98dc248d53f6138ded3a960c"
+  "deployTimeout": 300000,
+  "readyTimeout": 180000,
+  "deployRepo": "https://github.com/qindinp/keypool.git",
+  "mimoApiUrl": "https://api-oc.xiaomimimo.com/v1",
+  "publicWsUrl": "wss://your-public-host.example.com/tunnel",
+  "publicHttpBase": "https://your-public-host.example.com",
+  "giteeToken": ""
 }
