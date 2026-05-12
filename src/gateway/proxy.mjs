@@ -3,10 +3,30 @@
  *
  * 职责：
  * 1. 解析请求中的 model 字段
- * 2. 从 Registry 选择 verified upstream
- * 3. 优先通过 Tunnel（WS）转发，回退到 HTTP fetch
- * 4. 无可用 upstream 时返回 503
+ * 2. Strip provider prefix (e.g. "xiaomi/") from model name before forwarding upstream
+ * 3. 从 Registry 选择 verified upstream
+ * 4. 优先通过 Tunnel（WS）转发，回退到 HTTP fetch
+ * 5. 无可用 upstream 时返回 503
  */
+
+/**
+ * 已知的 provider 前缀，strip 后再转发给上游 API
+ * OpenClaw 等客户端可能用 "xiaomi/mimo-v2.5-pro" 格式，但 MiMo API 只认 "mimo-v2.5-pro"
+ */
+const PROVIDER_PREFIXES = ['xiaomi/', 'microsoft/', 'google/', 'anthropic/', 'openai/'];
+
+/**
+ * Strip provider prefix from model name
+ * "xiaomi/mimo-v2.5-pro" → "mimo-v2.5-pro"
+ * "mimo-v2-flash" → "mimo-v2-flash" (unchanged)
+ */
+export function stripModelPrefix(model) {
+  if (!model) return model;
+  for (const prefix of PROVIDER_PREFIXES) {
+    if (model.startsWith(prefix)) return model.slice(prefix.length);
+  }
+  return model;
+}
 
 /**
  * 读取请求体
@@ -33,10 +53,22 @@ export function createProxyHandler(registry, sendTunnelRequest) {
     const startTime = Date.now();
     const requestId = req.keypoolRequestId || req.headers['x-request-id'] || req.headers['x-keypool-request-id'] || null;
 
-    // 解析 model
+    // 解析 model 并 strip provider 前缀
     let model = null;
+    let strippedBody = body;
     if (body) {
-      try { model = JSON.parse(body).model || null; } catch (err) { console.warn(`⚠️ proxy body parse error: ${err.message}`); }
+      try {
+        const parsed = JSON.parse(body);
+        model = parsed.model || null;
+        // Strip provider prefix: "xiaomi/mimo-v2.5-pro" → "mimo-v2.5-pro"
+        const strippedModel = stripModelPrefix(model);
+        if (strippedModel !== model) {
+          parsed.model = strippedModel;
+          strippedBody = JSON.stringify(parsed);
+          console.log(`🔧 proxy strip model prefix: "${model}" → "${strippedModel}"`);
+        }
+        model = strippedModel;
+      } catch (err) { console.warn(`⚠️ proxy body parse error: ${err.message}`); }
     }
 
     // 选择 verified upstream
@@ -59,7 +91,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
           method: req.method,
           path: req.url,
           headers: { ...req.headers, host: undefined, ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
-          body: body || null,
+          body: strippedBody || null,
         }, { res });
 
         // 当 opts.res 被传入时，tunnel.mjs 会在收到 chunk 时直接写入 HTTP 响应（流式透传）。
@@ -128,7 +160,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
       const response = await fetch(targetUrl, {
         method: req.method,
         headers,
-        body: body || undefined,
+        body: strippedBody || undefined,
       });
 
       // 检查是否流式

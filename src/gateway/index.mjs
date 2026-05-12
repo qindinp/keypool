@@ -14,6 +14,7 @@ import { createProxyHandler, readBody } from './proxy.mjs';
 import { createAdminHandler } from './admin.mjs';
 import { anthropicToOpenAI, openAIToAnthropic, openAIChunkToAnthropicEvents } from './adapter.mjs';
 import { createTunnelServer } from './tunnel.mjs';
+import { stripModelPrefix } from './proxy.mjs';
 
 function makeRequestId() {
   return `kp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -181,7 +182,14 @@ export function createGateway(config) {
     const requestId = req.keypoolRequestId || req.headers['x-request-id'] || req.headers['x-keypool-request-id'] || null;
     const isStream = !!anthropicBody.stream;
     const openaiReq = anthropicToOpenAI(anthropicBody);
-    const model = anthropicBody.model || 'unknown';
+    const model = stripModelPrefix(anthropicBody.model || 'unknown');
+    // Strip provider prefix from the converted request model as well
+    const originalOpenAIModel = openaiReq.model;
+    const strippedOpenAIModel = stripModelPrefix(originalOpenAIModel);
+    if (strippedOpenAIModel !== originalOpenAIModel) {
+      openaiReq.model = strippedOpenAIModel;
+      console.log(`🔧 anthropic adapter strip model prefix: "${originalOpenAIModel}" → "${strippedOpenAIModel}"`);
+    }
     const openaiBody = JSON.stringify(openaiReq);
 
     const upstream = registry.chooseVerifiedUpstream(openaiReq.model);
