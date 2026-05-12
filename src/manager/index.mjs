@@ -12,7 +12,7 @@ import { AccountWorker } from './account-worker.mjs';
 import { Scheduler } from './scheduler.mjs';
 import { createDeployer } from './deployer.mjs';
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const DEFAULT_PUBLIC_WS_URL = 'wss://pc-20250301fuan.tail59e491.ts.net/tunnel';
 
 export function createManager(registry, opts = {}) {
   const config = createConfig();
@@ -35,8 +35,8 @@ export function createManager(registry, opts = {}) {
   console.log(`👥 加载 ${accounts.length} 个账号`);
 
   const deployer = createDeployer({
-    gatewayUrl: opts.gatewayUrl || process.env.KEYPOOL_GATEWAY_URL || `ws://127.0.0.1:${process.env.PORT || 9300}/ws`,
-    gatewayHttpBase: opts.gatewayHttpBase || process.env.KEYPOOL_GATEWAY_HTTP_BASE || `http://127.0.0.1:${process.env.PORT || 9300}`,
+    gatewayUrl: opts.gatewayUrl || process.env.KEYPOOL_GATEWAY_URL || config.publicWsUrl || DEFAULT_PUBLIC_WS_URL,
+    gatewayHttpBase: opts.gatewayHttpBase || process.env.KEYPOOL_GATEWAY_HTTP_BASE || config.publicHttpBase || 'https://pc-20250301fuan.tail59e491.ts.net',
     localSrcDir: opts.localSrcDir || config.localSrcDir,
     deployRepo: config.deployRepo,
     chatTimeout: config.chatTimeout,

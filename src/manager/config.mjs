@@ -36,6 +36,8 @@ export function createConfig(env = process.env) {
     retryMaxDelay: parseInt(env.RETRY_MAX_DELAY) || fileConfig.retryMaxDelay || 60_000,
     mimoApiUrl: env.MIMO_API_URL || fileConfig.mimoApiUrl || 'https://api-oc.xiaomimimo.com/v1',
     giteeToken: env.GITEE_TOKEN || fileConfig.giteeToken || '',
+    publicWsUrl: env.KEYPOOL_PUBLIC_WS_URL || env.KEYPOOL_GATEWAY_URL || fileConfig.publicWsUrl || '',
+    publicHttpBase: env.KEYPOOL_PUBLIC_HTTP_BASE || env.KEYPOOL_GATEWAY_HTTP_BASE || fileConfig.publicHttpBase || '',
     port: parseInt(env.PORT) || fileConfig.port || 9300,
     host: env.HOST || fileConfig.host || '0.0.0.0',
   };

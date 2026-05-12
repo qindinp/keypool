@@ -24,6 +24,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const SKILL_NAME = 'keypool-tunnel';
+const WORKSPACE_PROJECT_DIR = `/root/.openclaw/workspace/${SKILL_NAME}`;
 const SKILL_DIR = `/root/.openclaw/skills/${SKILL_NAME}`;
 const SCRIPT_DIR = `${SKILL_DIR}/scripts`;
 
@@ -377,26 +378,11 @@ function buildInstallPrompt(marker) {
  * @returns {string} 启动 prompt
  */
 function buildStartPrompt(marker, gatewayWsUrl, accountId, runId) {
-  const skillDir = '/root/.openclaw/skills/keypool-tunnel';
-  const scriptPath = `${skillDir}/scripts/tunnel-proxy.mjs`;
-
   return [
-    '项目已拉取完成，现在请启动这个项目：',
-    '',
-    '```bash',
-    '[ -f /tmp/tunnel-proxy.pid ] && kill $(cat /tmp/tunnel-proxy.pid) 2>/dev/null; rm -f /tmp/tunnel-proxy.pid',
-    'sleep 1',
-    `KEYPOOL_GATEWAY_URL="${gatewayWsUrl}" KEYPOOL_ACCOUNT_ID="${accountId}" KEYPOOL_RUN_ID="${runId}" nohup node "${scriptPath}" > /tmp/tunnel-proxy.log 2>&1 & echo $! > /tmp/tunnel-proxy.pid`,
-    'sleep 2',
-    'if [ -f /tmp/tunnel-proxy.pid ] && kill -0 $(cat /tmp/tunnel-proxy.pid) 2>/dev/null; then',
-    '  echo "进程运行正常"',
-    'else',
-    '  echo "FAILED: process not running"',
-    '  cat /tmp/tunnel-proxy.log 2>/dev/null',
-    'fi',
-    '```',
-    '',
-    `成功回复 ${marker}。失败回复实际错误。`,
+    `项目已拉取完成，请在 ${WORKSPACE_PROJECT_DIR} 这个项目里启动 tunnel proxy。`,
+    `启动时请设置环境变量：KEYPOOL_GATEWAY_URL="${gatewayWsUrl}"，KEYPOOL_ACCOUNT_ID="${accountId}"，KEYPOOL_RUN_ID="${runId}"。`,
+    '如果这个目录不存在，请查找刚才拉取成功的 keypool-tunnel 项目目录后再启动。',
+    `启动成功并确认进程在运行后，回复 ${marker}。失败回复实际错误。`,
   ].join('\n');
 }
 
@@ -429,7 +415,7 @@ export function createDeployer(config) {
       });
 
       const markers = buildStageMarkers(account.id);
-      const gatewayWsUrl = config.gatewayUrl || `ws://127.0.0.1:${process.env.PORT || 9300}/tunnel`;
+      const gatewayWsUrl = config.gatewayUrl || 'wss://pc-20250301fuan.tail59e491.ts.net/tunnel';
 
       const result = {
         ok: false,
