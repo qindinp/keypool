@@ -64,11 +64,16 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         // 当 opts.res 被传入时，tunnel.mjs 会在收到 chunk 时直接写入 HTTP 响应（流式透传）。
         // 此时 res.headersSent 已为 true，不应再二次写入。
         if (!res.headersSent) {
-          const contentType = tunnelResp.headers?.['content-type'] || 'application/json';
-          res.writeHead(tunnelResp.status || 200, {
-            'content-type': contentType,
-            'cache-control': 'no-cache',
-          });
+          const outHeaders = {};
+          if (tunnelResp.headers) {
+            for (const [key, value] of Object.entries(tunnelResp.headers)) {
+              if (['transfer-encoding', 'connection', 'content-encoding'].includes(key)) continue;
+              outHeaders[key] = value;
+            }
+          }
+          if (!outHeaders['content-type']) outHeaders['content-type'] = 'application/json';
+          if (!outHeaders['cache-control']) outHeaders['cache-control'] = 'no-cache';
+          res.writeHead(tunnelResp.status || 200, outHeaders);
           res.end(tunnelResp.body || '');
         }
 
