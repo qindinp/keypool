@@ -5,7 +5,7 @@
       "name": "小米账号A",
       "enabled": true,
       "priority": 10,
-      "cookie": "serviceToken=xxx; userId=yyy",
+      "cookieFile": "cookies/mimo-a.cookie",
       "tags": ["primary"]
     },
     {
@@ -13,7 +13,7 @@
       "name": "小米账号B",
       "enabled": false,
       "priority": 20,
-      "cookie": "serviceToken=xxx; userId=yyy",
+      "cookieFile": "cookies/mimo-b.cookie",
       "tags": ["standby"]
     }
   ]

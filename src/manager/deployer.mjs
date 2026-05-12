@@ -61,6 +61,25 @@ function buildStageMarkers(accountId) {
   };
 }
 
+export async function waitForTunnelRegistration({ registry, accountId, runId, timeoutMs = 180_000, intervalMs = 1_000 }) {
+  if (!registry || typeof registry.getInstanceState !== 'function') {
+    throw new Error('Missing registry for tunnel registration wait');
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const state = registry.getInstanceState(accountId);
+    const hasTunnel = !!state?.tunnel;
+    const runMatches = !runId || !state?.tunnelRunId || state.tunnelRunId === runId;
+    if (hasTunnel && runMatches && state.verified !== false && state.healthOk !== false) {
+      return state;
+    }
+    await sleep(intervalMs);
+  }
+
+  throw new Error(`Timed out waiting for tunnel registration accountId=${accountId} runId=${runId || '-'}`);
+}
+
 function classifyDeployError(err) {
   const message = err?.message || String(err || 'unknown error');
   const lower = message.toLowerCase();
@@ -377,9 +396,14 @@ function buildInstallPrompt(marker) {
  * @param {string} runId - 运行 ID
  * @returns {string} 启动 prompt
  */
-function buildStartPrompt(marker, gatewayWsUrl, accountId, runId) {
+export function buildStartPrompt(marker, gatewayWsUrl, accountId, runId) {
   return [
     `项目已拉取完成，请在 ${WORKSPACE_PROJECT_DIR} 这个项目里启动 tunnel proxy。`,
+    `启动前请先清理旧 tunnel 进程，避免旧 runId 持续重连：`,
+    '```bash',
+    `pkill -f "keypool-tunnel/scripts/tunnel-proxy.mjs" || true`,
+    `pkill -f "tunnel-proxy.mjs" || true`,
+    '```',
     `启动时请设置环境变量：KEYPOOL_GATEWAY_URL="${gatewayWsUrl}"，KEYPOOL_ACCOUNT_ID="${accountId}"，KEYPOOL_RUN_ID="${runId}"。`,
     '如果这个目录不存在，请查找刚才拉取成功的 keypool-tunnel 项目目录后再启动。',
     `启动成功并确认进程在运行后，回复 ${marker}。失败回复实际错误。`,
@@ -516,12 +540,26 @@ export function createDeployer(config) {
         });
         log('ok', 'tunnel proxy 启动完成');
 
-        // 阶段 3: 等待 tunnel 连接（由 Scheduler 或 AccountWorker 轮询确认）
-        result.ok = true;
-        result.verified = false;
-        result.healthOk = false;
-        markStage('tunnel-wait', 'pending');
+        // 阶段 4: 等待 tunnel register 成为正式成功信号
         log('info', '等待远端 tunnel 连接到 Gateway...');
+        markStage('tunnel-wait', 'running');
+
+        const tunnelState = await waitForTunnelRegistration({
+          registry: config.registry,
+          accountId: account.id,
+          runId: markers.runId,
+          timeoutMs: config.readyTimeout || 180_000,
+          intervalMs: 1_000,
+        });
+
+        result.ok = true;
+        result.verified = true;
+        result.healthOk = true;
+        markStage('tunnel-wait', 'ok', {
+          tunnelRunId: tunnelState.tunnelRunId || markers.runId,
+          tunnelConnectedAt: tunnelState.tunnelConnectedAt || new Date().toISOString(),
+        });
+        log('ok', '远端 tunnel 已注册到 Gateway');
 
         return result;
       } catch (err) {

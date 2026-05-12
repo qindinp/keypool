@@ -42,6 +42,7 @@ export function createManager(registry, opts = {}) {
     deployRepo: config.deployRepo,
     chatTimeout: config.chatTimeout,
     wsConnectTimeout: config.wsConnectTimeout,
+    readyTimeout: config.readyTimeout,
     mimoApiUrl: config.mimoApiUrl,
     giteeToken: config.giteeToken,
     registry,
