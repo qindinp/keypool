@@ -31,11 +31,32 @@ export function stripModelPrefix(model) {
   return model;
 }
 
+const MIMO_ALLOWED_TOP_LEVEL_PARAMS = new Set([
+  'model',
+  'messages',
+  'tools',
+  'tool_choice',
+  'stream',
+  'stream_options',
+  'max_tokens',
+  'temperature',
+  'top_p',
+  'stop',
+  'presence_penalty',
+  'frequency_penalty',
+  'seed',
+  'user',
+  'metadata',
+  'response_format',
+]);
+
 /**
- * MiMo API 不支持的 OpenAI 参数列表
- * 这些参数会被 proxy 自动从请求体中移除，避免上游返回 "Param Incorrect"
+ * MiMo API 不支持的 OpenAI 参数列表。
+ *
+ * 这里保留显式列表用于日志可读性；实际过滤采用 allowlist，避免后续
+ * OpenAI/QClaw 新增顶层参数时再次透传到 MiMo 导致 "Param Incorrect"。
  */
-const MIMO_UNSUPPORTED_PARAMS = [
+const MIMO_UNSUPPORTED_PARAMS = new Set([
   'n',                    // 不支持多候选回复
   'logprobs',             // 不支持 logprobs
   'top_logprobs',         // 不支持 top_logprobs
@@ -44,16 +65,19 @@ const MIMO_UNSUPPORTED_PARAMS = [
   'text_verbosity',       // OpenAI/QClaw 扩展参数，MiMo 不支持
   'verbosity',            // OpenAI/QClaw 扩展参数，MiMo 不支持
   'reasoning_effort',     // OpenAI reasoning 参数，MiMo 用 reasoning_content 历史字段而非该顶层参数
-];
+]);
 
 /**
  * Strip unsupported params from request body for MiMo upstream
  * Returns { strippedBody, removedParams } or null if nothing changed
  */
-export function stripUnsupportedParams(body) {
+export function stripUnsupportedParams(body, model = null) {
   if (!body) return null;
   try {
     const parsed = JSON.parse(body);
+    const effectiveModel = stripModelPrefix(model || parsed.model || '');
+    if (effectiveModel && !effectiveModel.startsWith('mimo-')) return null;
+
     const removed = [];
 
     // OpenAI newer clients send max_completion_tokens, while MiMo's
@@ -69,12 +93,13 @@ export function stripUnsupportedParams(body) {
       delete parsed.max_completion_tokens;
     }
 
-    for (const key of MIMO_UNSUPPORTED_PARAMS) {
-      if (key in parsed) {
-        removed.push(`${key}=${JSON.stringify(parsed[key])}`);
-        delete parsed[key];
-      }
+    for (const key of Object.keys(parsed)) {
+      if (MIMO_ALLOWED_TOP_LEVEL_PARAMS.has(key)) continue;
+      const label = MIMO_UNSUPPORTED_PARAMS.has(key) ? key : `unknown:${key}`;
+      removed.push(`${label}=${JSON.stringify(parsed[key])}`);
+      delete parsed[key];
     }
+
     if (removed.length === 0) return null;
     return { strippedBody: JSON.stringify(parsed), removedParams: removed };
   } catch {
@@ -208,7 +233,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         model = strippedModel;
 
         // Strip unsupported params (n, logprobs, etc.) for MiMo upstream
-        const paramResult = stripUnsupportedParams(strippedBody);
+        const paramResult = stripUnsupportedParams(strippedBody, model);
         if (paramResult) {
           strippedBody = paramResult.strippedBody;
           console.log(`🔧 proxy strip unsupported params: ${paramResult.removedParams.join(', ')}`);

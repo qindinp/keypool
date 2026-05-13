@@ -75,6 +75,30 @@ describe('stripUnsupportedParams', () => {
     assert.equal(parsed.max_tokens, 50);
   });
 
+  it('strips unknown top-level params for MiMo by default', () => {
+    const result = stripUnsupportedParams(JSON.stringify({
+      model: 'mimo-v2.5-pro',
+      messages: [],
+      made_up_openai_future_param: { enabled: true },
+    }));
+    assert.ok(result);
+    const parsed = JSON.parse(result.strippedBody);
+    assert.equal(parsed.made_up_openai_future_param, undefined);
+    assert.deepEqual(Object.keys(parsed).sort(), ['messages', 'model']);
+    assert.equal(result.removedParams[0].startsWith('unknown:made_up_openai_future_param='), true);
+  });
+
+  it('does not strip params for non-MiMo models', () => {
+    const body = JSON.stringify({
+      model: 'gpt-4.1',
+      messages: [],
+      store: true,
+      max_completion_tokens: 123,
+    });
+    const result = stripUnsupportedParams(body);
+    assert.equal(result, null);
+  });
+
   it('returns null when no unsupported params present', () => {
     const result = stripUnsupportedParams('{"model":"mimo-v2.5-pro","temperature":0.7,"messages":[]}');
     assert.equal(result, null);

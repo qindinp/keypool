@@ -191,7 +191,7 @@ export function createGateway(config) {
       console.log(`🔧 anthropic adapter strip model prefix: "${originalOpenAIModel}" → "${strippedOpenAIModel}"`);
     }
     // Strip unsupported params for MiMo upstream
-    const paramResult = stripUnsupportedParams(JSON.stringify(openaiReq));
+    const paramResult = stripUnsupportedParams(JSON.stringify(openaiReq), openaiReq.model);
     let openaiBody;
     if (paramResult) {
       openaiBody = paramResult.strippedBody;
