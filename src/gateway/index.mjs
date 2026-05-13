@@ -64,6 +64,13 @@ export function createGateway(config) {
         return;
       }
 
+      // Local-only debug endpoint: bypass KeyPool sanitizer and send the raw body
+      // through the selected upstream. This is intentionally before the generic
+      // /admin handler so localhost diagnostics can test native upstream params.
+      if (url.pathname === '/admin/api/debug/raw-chat' && req.method === 'POST') {
+        return handleRawChatDebugRequest(req, res, await readBody(req), registry, tunnel);
+      }
+
       // Admin / Health
       if (url.pathname === '/health' || url.pathname.startsWith('/admin')) {
         return adminHandler(req, res);
@@ -166,6 +173,65 @@ export function createGateway(config) {
     }
 
     return [...models.values()];
+  }
+
+  async function handleRawChatDebugRequest(req, res, body, registry, tunnel) {
+    const remote = req.socket?.remoteAddress || '';
+    const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1' || remote === 'localhost';
+    if (!isLocal) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'raw debug endpoint is localhost-only', type: 'forbidden' } }));
+      return;
+    }
+
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'invalid JSON body', type: 'invalid_request_error' } }));
+      return;
+    }
+
+    const model = stripModelPrefix(parsed.model || 'mimo-v2.5-pro');
+    parsed.model = model;
+    const rawBody = JSON.stringify(parsed);
+    const upstream = registry.chooseVerifiedUpstream(model);
+    if (!upstream) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'No healthy upstream available', type: 'service_unavailable' } }));
+      return;
+    }
+
+    try {
+      let upstreamResp;
+      if (upstream.tunnel && tunnel.sendProxyRequest) {
+        upstreamResp = await tunnel.sendProxyRequest(upstream.tunnel, {
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json', 'x-keypool-raw-debug': '1' },
+          body: rawBody,
+        }, { timeoutMs: getMimoTunnelTimeoutMs(rawBody, model) });
+      } else {
+        const baseUrl = upstream.proxyUrl || upstream.baseUrl || upstream.localUrl;
+        if (!baseUrl) throw new Error('No upstream connection available');
+        const response = await fetch(new URL('/v1/chat/completions', baseUrl).toString(), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-keypool-raw-debug': '1' },
+          body: rawBody,
+        });
+        upstreamResp = { status: response.status, headers: Object.fromEntries(response.headers.entries()), body: await response.text() };
+      }
+
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: (upstreamResp.status || 200) < 400,
+        upstreamStatus: upstreamResp.status || 200,
+        accountId: upstream.accountId,
+        body: upstreamResp.body || '',
+      }));
+    } catch (err) {
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: err.message || 'raw debug request failed', type: 'proxy_error' } }));
+    }
   }
 
   // Anthropic 请求处理

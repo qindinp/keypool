@@ -31,40 +31,21 @@ export function stripModelPrefix(model) {
   return model;
 }
 
-const MIMO_ALLOWED_TOP_LEVEL_PARAMS = new Set([
-  'model',
-  'messages',
-  'tools',
-  'tool_choice',
-  'stream',
-  'stream_options',
-  'max_tokens',
-  'temperature',
-  'top_p',
-  'stop',
-  'presence_penalty',
-  'frequency_penalty',
-  'seed',
-  'user',
-  'metadata',
-  'response_format',
-]);
-
 /**
- * MiMo API 不支持的 OpenAI 参数列表。
+ * MiMo native parameter probe notes (2026-05-13):
+ * - Confirmed rejected: n=2 -> 400 "n is not supported".
+ * - Confirmed accepted/ignored with HTTP 200: logprobs, top_logprobs,
+ *   store, parallel_tool_calls, text_verbosity, verbosity,
+ *   reasoning_effort, metadata, user, response_format, tools/tool_choice,
+ *   max_completion_tokens, and unknown top-level fields.
  *
- * 这里保留显式列表用于日志可读性；实际过滤采用 allowlist，避免后续
- * OpenAI/QClaw 新增顶层参数时再次透传到 MiMo 导致 "Param Incorrect"。
+ * Keep the sanitizer deliberately narrow. Over-stripping accepted fields makes
+ * KeyPool diverge from Xiaomi's OpenAI-compatible surface and can hide useful
+ * client behavior. Only remove fields known to break MiMo, plus normalize the
+ * OpenAI max_completion_tokens alias to max_tokens for older compatibility.
  */
-const MIMO_UNSUPPORTED_PARAMS = new Set([
-  'n',                    // 不支持多候选回复
-  'logprobs',             // 不支持 logprobs
-  'top_logprobs',         // 不支持 top_logprobs
-  'store',                // OpenAI Responses/Chat 存储开关，MiMo 不支持
-  'parallel_tool_calls',  // OpenAI tool-call 调度开关，MiMo 不支持
-  'text_verbosity',       // OpenAI/QClaw 扩展参数，MiMo 不支持
-  'verbosity',            // OpenAI/QClaw 扩展参数，MiMo 不支持
-  'reasoning_effort',     // OpenAI reasoning 参数，MiMo 用 reasoning_content 历史字段而非该顶层参数
+const MIMO_REJECTED_PARAMS = new Set([
+  'n', // MiMo returns 400: "n is not supported" when n != 1
 ]);
 
 /**
@@ -93,11 +74,11 @@ export function stripUnsupportedParams(body, model = null) {
       delete parsed.max_completion_tokens;
     }
 
-    for (const key of Object.keys(parsed)) {
-      if (MIMO_ALLOWED_TOP_LEVEL_PARAMS.has(key)) continue;
-      const label = MIMO_UNSUPPORTED_PARAMS.has(key) ? key : `unknown:${key}`;
-      removed.push(`${label}=${JSON.stringify(parsed[key])}`);
-      delete parsed[key];
+    for (const key of MIMO_REJECTED_PARAMS) {
+      if (key in parsed) {
+        removed.push(`${key}=${JSON.stringify(parsed[key])}`);
+        delete parsed[key];
+      }
     }
 
     if (removed.length === 0) return null;

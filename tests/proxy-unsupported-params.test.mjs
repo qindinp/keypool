@@ -10,27 +10,23 @@ describe('stripUnsupportedParams', () => {
     assert.deepEqual(result.removedParams, ['n=2']);
   });
 
-  it('strips logprobs and top_logprobs', () => {
+  it('preserves logprobs and top_logprobs because native MiMo currently accepts them', () => {
     const result = stripUnsupportedParams('{"model":"mimo-v2.5-pro","logprobs":true,"top_logprobs":5,"messages":[]}');
-    assert.ok(result);
-    const parsed = JSON.parse(result.strippedBody);
-    assert.equal(parsed.logprobs, undefined);
-    assert.equal(parsed.top_logprobs, undefined);
-    assert.equal(parsed.model, 'mimo-v2.5-pro');
+    assert.equal(result, null);
   });
 
-  it('strips multiple unsupported params together', () => {
+  it('only strips confirmed rejected params while preserving accepted extras', () => {
     const result = stripUnsupportedParams('{"model":"mimo-v2.5-pro","n":3,"logprobs":true,"top_logprobs":10,"temperature":0.7,"messages":[]}');
     assert.ok(result);
     const parsed = JSON.parse(result.strippedBody);
     assert.equal(parsed.n, undefined);
-    assert.equal(parsed.logprobs, undefined);
-    assert.equal(parsed.top_logprobs, undefined);
-    assert.equal(parsed.temperature, 0.7); // supported param kept
+    assert.equal(parsed.logprobs, true);
+    assert.equal(parsed.top_logprobs, 10);
+    assert.equal(parsed.temperature, 0.7);
     assert.equal(parsed.model, 'mimo-v2.5-pro');
   });
 
-  it('strips OpenAI/QClaw extra params that MiMo rejects', () => {
+  it('preserves OpenAI/QClaw extra params that native MiMo accepts or ignores', () => {
     const result = stripUnsupportedParams(JSON.stringify({
       model: 'mimo-v2.5-pro',
       messages: [],
@@ -40,14 +36,7 @@ describe('stripUnsupportedParams', () => {
       verbosity: 'low',
       reasoning_effort: 'medium',
     }));
-    assert.ok(result);
-    const parsed = JSON.parse(result.strippedBody);
-    assert.equal(parsed.store, undefined);
-    assert.equal(parsed.parallel_tool_calls, undefined);
-    assert.equal(parsed.text_verbosity, undefined);
-    assert.equal(parsed.verbosity, undefined);
-    assert.equal(parsed.reasoning_effort, undefined);
-    assert.equal(parsed.model, 'mimo-v2.5-pro');
+    assert.equal(result, null);
   });
 
   it('maps max_completion_tokens to max_tokens for MiMo', () => {
@@ -75,17 +64,13 @@ describe('stripUnsupportedParams', () => {
     assert.equal(parsed.max_tokens, 50);
   });
 
-  it('strips unknown top-level params for MiMo by default', () => {
+  it('preserves unknown top-level params because native MiMo currently accepts/ignores them', () => {
     const result = stripUnsupportedParams(JSON.stringify({
       model: 'mimo-v2.5-pro',
       messages: [],
       made_up_openai_future_param: { enabled: true },
     }));
-    assert.ok(result);
-    const parsed = JSON.parse(result.strippedBody);
-    assert.equal(parsed.made_up_openai_future_param, undefined);
-    assert.deepEqual(Object.keys(parsed).sort(), ['messages', 'model']);
-    assert.equal(result.removedParams[0].startsWith('unknown:made_up_openai_future_param='), true);
+    assert.equal(result, null);
   });
 
   it('does not strip params for non-MiMo models', () => {
