@@ -30,6 +30,51 @@ describe('stripUnsupportedParams', () => {
     assert.equal(parsed.model, 'mimo-v2.5-pro');
   });
 
+  it('strips OpenAI/QClaw extra params that MiMo rejects', () => {
+    const result = stripUnsupportedParams(JSON.stringify({
+      model: 'mimo-v2.5-pro',
+      messages: [],
+      store: true,
+      parallel_tool_calls: true,
+      text_verbosity: 'medium',
+      verbosity: 'low',
+      reasoning_effort: 'medium',
+    }));
+    assert.ok(result);
+    const parsed = JSON.parse(result.strippedBody);
+    assert.equal(parsed.store, undefined);
+    assert.equal(parsed.parallel_tool_calls, undefined);
+    assert.equal(parsed.text_verbosity, undefined);
+    assert.equal(parsed.verbosity, undefined);
+    assert.equal(parsed.reasoning_effort, undefined);
+    assert.equal(parsed.model, 'mimo-v2.5-pro');
+  });
+
+  it('maps max_completion_tokens to max_tokens for MiMo', () => {
+    const result = stripUnsupportedParams(JSON.stringify({
+      model: 'mimo-v2.5-pro',
+      messages: [],
+      max_completion_tokens: 123,
+    }));
+    assert.ok(result);
+    const parsed = JSON.parse(result.strippedBody);
+    assert.equal(parsed.max_completion_tokens, undefined);
+    assert.equal(parsed.max_tokens, 123);
+  });
+
+  it('drops max_completion_tokens when max_tokens is already present', () => {
+    const result = stripUnsupportedParams(JSON.stringify({
+      model: 'mimo-v2.5-pro',
+      messages: [],
+      max_tokens: 50,
+      max_completion_tokens: 123,
+    }));
+    assert.ok(result);
+    const parsed = JSON.parse(result.strippedBody);
+    assert.equal(parsed.max_completion_tokens, undefined);
+    assert.equal(parsed.max_tokens, 50);
+  });
+
   it('returns null when no unsupported params present', () => {
     const result = stripUnsupportedParams('{"model":"mimo-v2.5-pro","temperature":0.7,"messages":[]}');
     assert.equal(result, null);

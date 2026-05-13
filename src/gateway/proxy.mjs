@@ -36,9 +36,14 @@ export function stripModelPrefix(model) {
  * 这些参数会被 proxy 自动从请求体中移除，避免上游返回 "Param Incorrect"
  */
 const MIMO_UNSUPPORTED_PARAMS = [
-  'n',           // 不支持多候选回复
-  'logprobs',    // 不支持 logprobs
-  'top_logprobs',// 不支持 top_logprobs
+  'n',                    // 不支持多候选回复
+  'logprobs',             // 不支持 logprobs
+  'top_logprobs',         // 不支持 top_logprobs
+  'store',                // OpenAI Responses/Chat 存储开关，MiMo 不支持
+  'parallel_tool_calls',  // OpenAI tool-call 调度开关，MiMo 不支持
+  'text_verbosity',       // OpenAI/QClaw 扩展参数，MiMo 不支持
+  'verbosity',            // OpenAI/QClaw 扩展参数，MiMo 不支持
+  'reasoning_effort',     // OpenAI reasoning 参数，MiMo 用 reasoning_content 历史字段而非该顶层参数
 ];
 
 /**
@@ -50,6 +55,20 @@ export function stripUnsupportedParams(body) {
   try {
     const parsed = JSON.parse(body);
     const removed = [];
+
+    // OpenAI newer clients send max_completion_tokens, while MiMo's
+    // OpenAI-compatible endpoint accepts the older max_tokens name.
+    // Preserve the user's limit instead of dropping it when possible.
+    if ('max_completion_tokens' in parsed) {
+      if (!('max_tokens' in parsed)) {
+        parsed.max_tokens = parsed.max_completion_tokens;
+        removed.push(`max_completion_tokens=${JSON.stringify(parsed.max_completion_tokens)}->max_tokens`);
+      } else {
+        removed.push(`max_completion_tokens=${JSON.stringify(parsed.max_completion_tokens)}`);
+      }
+      delete parsed.max_completion_tokens;
+    }
+
     for (const key of MIMO_UNSUPPORTED_PARAMS) {
       if (key in parsed) {
         removed.push(`${key}=${JSON.stringify(parsed[key])}`);
