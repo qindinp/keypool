@@ -114,8 +114,8 @@ export function fixMimoReasoningContent(body, model) {
 
     let patched = false;
     let injected = 0;
-    let skippedToolCalls = 0;
     let existing = 0;
+    let missingToolCalls = 0;
 
     for (const msg of messages) {
       if (msg.role !== 'assistant') continue;
@@ -124,15 +124,15 @@ export function fixMimoReasoningContent(body, model) {
         continue;
       }
 
-      // OpenAI-compatible tool-call history is valid without reasoning_content.
-      // Injecting reasoning_content:null into every historical tool-call assistant
-      // turn makes long MiMo tool chains diverge from the native schema and has
-      // correlated with silent stalls after repeated tool calls. Keep the older
-      // null shim only for non-tool assistant turns, where MiMo may reject a
-      // missing field with "Param Incorrect".
+      // Xiaomi MiMo thinking-mode requirement (2026-05-12 notice):
+      // in multi-turn agent chats, historical assistant messages containing
+      // tool_calls must carry reasoning_content back to the API. If the client
+      // already preserved the original value, keep it. If it omitted the field,
+      // inject null as a compatibility shim; native probing shows a missing
+      // field returns 400, while null is accepted. This cannot reconstruct the
+      // original chain-of-thought, but it prevents hard request failure.
       if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-        skippedToolCalls++;
-        continue;
+        missingToolCalls++;
       }
 
       msg.reasoning_content = null;
@@ -140,8 +140,8 @@ export function fixMimoReasoningContent(body, model) {
       patched = true;
     }
 
-    if (patched || skippedToolCalls || existing) {
-      console.log(`🔧 proxy fix: MiMo reasoning_content existing=${existing} injectedNull=${injected} skippedToolCallAssistants=${skippedToolCalls}`);
+    if (patched || missingToolCalls || existing) {
+      console.log(`🔧 proxy fix: MiMo reasoning_content existing=${existing} injectedNull=${injected} missingToolCallAssistants=${missingToolCalls}`);
     }
     if (patched) return { fixedBody: JSON.stringify(parsed), patched: true };
     return { fixedBody: body, patched: false };

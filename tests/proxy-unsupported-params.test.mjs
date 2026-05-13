@@ -117,7 +117,7 @@ describe('stripUnsupportedParams', () => {
 });
 
 describe('fixMimoReasoningContent', () => {
-  it('does not inject reasoning_content:null into assistant tool_call messages', () => {
+  it('injects reasoning_content:null into assistant tool_call messages when missing', () => {
     const body = JSON.stringify({
       model: 'mimo-v2.5-pro',
       messages: [
@@ -125,9 +125,9 @@ describe('fixMimoReasoningContent', () => {
       ],
     });
     const result = fixMimoReasoningContent(body, 'mimo-v2.5-pro');
-    assert.equal(result.patched, false);
+    assert.equal(result.patched, true);
     const parsed = JSON.parse(result.fixedBody);
-    assert.equal('reasoning_content' in parsed.messages[0], false);
+    assert.equal(parsed.messages[0].reasoning_content, null);
   });
 
   it('still injects reasoning_content:null into non-tool assistant messages', () => {
