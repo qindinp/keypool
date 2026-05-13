@@ -145,6 +145,71 @@ test('anthropicToOpenAI: stop_sequences mapped to stop', () => {
   assert.deepEqual(result.stop, ['STOP', 'END']);
 });
 
+test('anthropicToOpenAI: assistant tool_use preserves preceding thinking as reasoning_content', () => {
+  const result = anthropicToOpenAI({
+    messages: [{
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'Need weather and time, so call both tools.' },
+        { type: 'tool_use', id: 'call_weather', name: 'get_current_weather', input: { location: 'Beijing' } },
+        { type: 'tool_use', id: 'call_time', name: 'get_time', input: { timezone: 'Asia/Shanghai' } },
+      ],
+    }],
+  });
+  const msg = result.messages[0];
+  assert.equal(msg.role, 'assistant');
+  assert.equal(msg.reasoning_content, 'Need weather and time, so call both tools.');
+  assert.equal(msg.content, undefined);
+  assert.equal(msg.tool_calls.length, 2);
+  assert.equal(msg.tool_calls[0].id, 'call_weather');
+  assert.equal(msg.tool_calls[1].id, 'call_time');
+});
+
+test('openAIToAnthropic: reasoning_content is emitted before tool_use blocks', () => {
+  const result = openAIToAnthropic({
+    id: 'chatcmpl-reasoning-tools',
+    choices: [{
+      message: {
+        reasoning_content: 'Need weather and time, so call both tools.',
+        content: null,
+        tool_calls: [
+          { id: 'call_weather', type: 'function', function: { name: 'get_current_weather', arguments: '{"location":"Beijing"}' } },
+          { id: 'call_time', type: 'function', function: { name: 'get_time', arguments: '{"timezone":"Asia/Shanghai"}' } },
+        ],
+      },
+      finish_reason: 'tool_calls',
+    }],
+  }, 'mimo-v2.5-pro');
+
+  assert.equal(result.content.length, 3);
+  assert.equal(result.content[0].type, 'thinking');
+  assert.equal(result.content[0].thinking, 'Need weather and time, so call both tools.');
+  assert.equal(result.content[1].type, 'tool_use');
+  assert.equal(result.content[1].id, 'call_weather');
+  assert.equal(result.content[2].type, 'tool_use');
+  assert.equal(result.content[2].id, 'call_time');
+  assert.equal(result.stop_reason, 'tool_use');
+});
+
+test('openAIToAnthropic: empty reasoning_content is preserved as an empty thinking block before tool_use', () => {
+  const result = openAIToAnthropic({
+    id: 'chatcmpl-empty-reasoning-tools',
+    choices: [{
+      message: {
+        reasoning_content: '',
+        content: null,
+        tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'search', arguments: '{}' } }],
+      },
+      finish_reason: 'tool_calls',
+    }],
+  }, 'mimo-v2.5-pro');
+
+  assert.equal(result.content.length, 2);
+  assert.equal(result.content[0].type, 'thinking');
+  assert.equal(result.content[0].thinking, '');
+  assert.equal(result.content[1].type, 'tool_use');
+});
+
 // ─── openAIToAnthropic ────────────────────────────────────────────
 
 test('openAIToAnthropic: text only', () => {

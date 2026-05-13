@@ -163,8 +163,9 @@ export function openAIToAnthropic(oaiResp, model) {
 
   const content = [];
 
-  if (choice.message?.reasoning_content) {
-    content.push({ type: 'thinking', thinking: choice.message.reasoning_content });
+  const hasReasoningContent = choice.message && Object.prototype.hasOwnProperty.call(choice.message, 'reasoning_content');
+  if (hasReasoningContent && choice.message.reasoning_content !== null && choice.message.reasoning_content !== undefined) {
+    content.push({ type: 'thinking', thinking: String(choice.message.reasoning_content) });
   }
 
   if (Array.isArray(choice.message?.tool_calls) && choice.message.tool_calls.length > 0) {
