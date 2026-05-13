@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 /**
  * Gateway 请求代理 — 支持 Tunnel（WS 反连）和 HTTP 直连
  *
@@ -61,6 +64,82 @@ export function stripUnsupportedParams(body) {
 }
 
 /**
+ * Fix MiMo reasoning_content requirement
+ *
+ * MiMo API thinking 模式要求：多轮对话中，如果 assistant 消息之前带 reasoning_content，
+ * 下一轮请求必须回传该 reasoning_content。OpenClaw 等客户端在构造 messages 时会丢弃
+ * reasoning_content，导致 MiMo 返回 400 "Param Incorrect"。
+ *
+ * 修复策略：对 MiMo 模型，为所有缺少 reasoning_content 的 assistant 消息注入
+ * reasoning_content: null，让 MiMo 不再报错。
+ *
+ * @param {string} body - JSON string of request body
+ * @param {string} model - already-stripped model name
+ * @returns {{ fixedBody: string, patched: boolean }}
+ */
+export function fixMimoReasoningContent(body, model) {
+  if (!body || !model) return { fixedBody: body, patched: false };
+  // Only apply to MiMo models
+  if (!model.startsWith('mimo-')) return { fixedBody: body, patched: false };
+
+  try {
+    const parsed = JSON.parse(body);
+    const messages = parsed.messages;
+    if (!Array.isArray(messages)) return { fixedBody: body, patched: false };
+
+    let patched = false;
+    let injected = 0;
+    let skippedToolCalls = 0;
+    let existing = 0;
+
+    for (const msg of messages) {
+      if (msg.role !== 'assistant') continue;
+      if ('reasoning_content' in msg) {
+        existing++;
+        continue;
+      }
+
+      // OpenAI-compatible tool-call history is valid without reasoning_content.
+      // Injecting reasoning_content:null into every historical tool-call assistant
+      // turn makes long MiMo tool chains diverge from the native schema and has
+      // correlated with silent stalls after repeated tool calls. Keep the older
+      // null shim only for non-tool assistant turns, where MiMo may reject a
+      // missing field with "Param Incorrect".
+      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        skippedToolCalls++;
+        continue;
+      }
+
+      msg.reasoning_content = null;
+      injected++;
+      patched = true;
+    }
+
+    if (patched || skippedToolCalls || existing) {
+      console.log(`🔧 proxy fix: MiMo reasoning_content existing=${existing} injectedNull=${injected} skippedToolCallAssistants=${skippedToolCalls}`);
+    }
+    if (patched) return { fixedBody: JSON.stringify(parsed), patched: true };
+    return { fixedBody: body, patched: false };
+  } catch {
+    return { fixedBody: body, patched: false };
+  }
+}
+
+export function getMimoTunnelTimeoutMs(body, model) {
+  if (!model?.startsWith('mimo-')) return 120_000;
+  try {
+    const parsed = JSON.parse(body || '{}');
+    const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    const messageCount = messages.length;
+    const toolResultCount = messages.filter((m) => m?.role === 'tool').length;
+    const toolCallAssistantCount = messages.filter((m) => m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0).length;
+    const bodyBytes = Buffer.byteLength(body || '', 'utf8');
+    console.log(`📊 MiMo request summary: bytes=${bodyBytes} messages=${messageCount} toolResults=${toolResultCount} toolCallAssistants=${toolCallAssistantCount} stream=${!!parsed.stream}`);
+  } catch {}
+  return 600_000;
+}
+
+/**
  * 读取请求体
  * @param {import('node:http').IncomingMessage} req
  * @returns {Promise<string>}
@@ -89,6 +168,14 @@ export function createProxyHandler(registry, sendTunnelRequest) {
     let model = null;
     let strippedBody = body;
     if (body) {
+      // 🔴 RAW: log original body to file for debugging
+      try {
+        const rawDir = join(process.cwd(), '_raw_bodies');
+        if (!existsSync(rawDir)) mkdirSync(rawDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        writeFileSync(join(rawDir, `raw_${ts}.json`), body, 'utf8');
+        console.log(`📥 proxy RAW body saved to _raw_bodies/raw_${ts}.json (${body.length} bytes)`);
+      } catch (e) { console.error('Failed to save raw body:', e.message); }
       try {
         const parsed = JSON.parse(body);
         model = parsed.model || null;
@@ -107,6 +194,18 @@ export function createProxyHandler(registry, sendTunnelRequest) {
           strippedBody = paramResult.strippedBody;
           console.log(`🔧 proxy strip unsupported params: ${paramResult.removedParams.join(', ')}`);
         }
+
+        // Fix MiMo reasoning_content requirement
+        const fixResult = fixMimoReasoningContent(strippedBody, model);
+        if (fixResult.patched) {
+          strippedBody = fixResult.fixedBody;
+        }
+        // Debug: log the final forwarded body keys AND full body for upstream debugging
+        try {
+          const finalParsed = JSON.parse(strippedBody);
+          console.log(`📤 proxy forwarding keys: [${Object.keys(finalParsed).join(', ')}] model=${finalParsed.model}`);
+          console.log(`📋 proxy full body: ${strippedBody.substring(0, 2000)}`);
+        } catch {}
       } catch (err) { console.warn(`⚠️ proxy body parse error: ${err.message}`); }
     }
 
@@ -131,7 +230,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
           path: req.url,
           headers: { ...req.headers, host: undefined, ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
           body: strippedBody || null,
-        }, { res });
+        }, { res, timeoutMs: getMimoTunnelTimeoutMs(strippedBody, model) });
 
         // 当 opts.res 被传入时，tunnel.mjs 会在收到 chunk 时直接写入 HTTP 响应（流式透传）。
         // 此时 res.headersSent 已为 true，不应再二次写入。
@@ -152,6 +251,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         const latencyMs = Date.now() - startTime;
         const status = tunnelResp.status || 200;
         if (status >= 400) {
+          console.error(`❌ upstream error [${upstream.accountId}] status=${status} requestId=${requestId || '-'} body=${(tunnelResp.body || '').substring(0, 500)}`);
           registry.markProxyUpstreamError(upstream.accountId, status, tunnelResp.body);
         } else {
           registry.markProxySuccess(upstream.accountId, latencyMs);

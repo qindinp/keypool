@@ -14,7 +14,7 @@ import { createProxyHandler, readBody } from './proxy.mjs';
 import { createAdminHandler } from './admin.mjs';
 import { anthropicToOpenAI, openAIToAnthropic, openAIChunkToAnthropicEvents } from './adapter.mjs';
 import { createTunnelServer } from './tunnel.mjs';
-import { stripModelPrefix, stripUnsupportedParams } from './proxy.mjs';
+import { stripModelPrefix, stripUnsupportedParams, fixMimoReasoningContent, getMimoTunnelTimeoutMs } from './proxy.mjs';
 
 function makeRequestId() {
   return `kp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -199,6 +199,16 @@ export function createGateway(config) {
     } else {
       openaiBody = JSON.stringify(openaiReq);
     }
+    // Fix MiMo reasoning_content requirement
+    const fixResult = fixMimoReasoningContent(openaiBody, openaiReq.model);
+    if (fixResult.patched) {
+      openaiBody = fixResult.fixedBody;
+    }
+    // Debug: log final forwarded body
+    try {
+      const finalParsed = JSON.parse(openaiBody);
+      console.log(`📤 anthropic forwarding keys: [${Object.keys(finalParsed).join(', ')}] model=${finalParsed.model}`);
+    } catch {}
 
     const upstream = registry.chooseVerifiedUpstream(openaiReq.model);
     if (!upstream) {
@@ -256,7 +266,7 @@ export function createGateway(config) {
             path: '/v1/chat/completions',
             headers: { 'content-type': 'application/json', 'accept': 'text/event-stream', ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
             body: openaiBody,
-          }, { onChunk });
+          }, { onChunk, timeoutMs: getMimoTunnelTimeoutMs(openaiBody, openaiReq.model) });
 
           // 处理 lineBuf 中可能残留的最后一行
           if (lineBuf.trim()) {
@@ -287,7 +297,7 @@ export function createGateway(config) {
             path: '/v1/chat/completions',
             headers: { 'content-type': 'application/json', ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
             body: openaiBody,
-          });
+          }, { timeoutMs: getMimoTunnelTimeoutMs(openaiBody, openaiReq.model) });
           const oaiResp = JSON.parse(tunnelResp.body || '{}');
           const anthropicResp = openAIToAnthropic(oaiResp, model);
           res.writeHead(200, { 'content-type': 'application/json' });

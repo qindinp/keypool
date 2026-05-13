@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { stripUnsupportedParams } from '../src/gateway/proxy.mjs';
+import { stripUnsupportedParams, fixMimoReasoningContent, getMimoTunnelTimeoutMs } from '../src/gateway/proxy.mjs';
 
 describe('stripUnsupportedParams', () => {
   it('strips n parameter', () => {
@@ -59,5 +59,51 @@ describe('stripUnsupportedParams', () => {
     });
     const result = stripUnsupportedParams(body);
     assert.equal(result, null); // nothing to strip
+  });
+});
+
+describe('fixMimoReasoningContent', () => {
+  it('does not inject reasoning_content:null into assistant tool_call messages', () => {
+    const body = JSON.stringify({
+      model: 'mimo-v2.5-pro',
+      messages: [
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'search', arguments: '{}' } }] },
+      ],
+    });
+    const result = fixMimoReasoningContent(body, 'mimo-v2.5-pro');
+    assert.equal(result.patched, false);
+    const parsed = JSON.parse(result.fixedBody);
+    assert.equal('reasoning_content' in parsed.messages[0], false);
+  });
+
+  it('still injects reasoning_content:null into non-tool assistant messages', () => {
+    const body = JSON.stringify({
+      model: 'mimo-v2.5-pro',
+      messages: [{ role: 'assistant', content: 'hello' }],
+    });
+    const result = fixMimoReasoningContent(body, 'mimo-v2.5-pro');
+    assert.equal(result.patched, true);
+    const parsed = JSON.parse(result.fixedBody);
+    assert.equal(parsed.messages[0].reasoning_content, null);
+  });
+
+  it('preserves existing reasoning_content', () => {
+    const body = JSON.stringify({
+      model: 'mimo-v2.5-pro',
+      messages: [{ role: 'assistant', content: 'answer', reasoning_content: 'think' }],
+    });
+    const result = fixMimoReasoningContent(body, 'mimo-v2.5-pro');
+    assert.equal(result.patched, false);
+    assert.equal(JSON.parse(result.fixedBody).messages[0].reasoning_content, 'think');
+  });
+});
+
+describe('getMimoTunnelTimeoutMs', () => {
+  it('returns 10 minutes for MiMo requests', () => {
+    assert.equal(getMimoTunnelTimeoutMs('{"messages":[]}', 'mimo-v2.5-pro'), 600_000);
+  });
+
+  it('returns default timeout for non-MiMo requests', () => {
+    assert.equal(getMimoTunnelTimeoutMs('{"messages":[]}', 'gpt-4'), 120_000);
   });
 });
