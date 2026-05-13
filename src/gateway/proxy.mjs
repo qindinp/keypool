@@ -1,5 +1,3 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 /**
  * Gateway 请求代理 — 支持 Tunnel（WS 反连）和 HTTP 直连
@@ -179,7 +177,29 @@ export function readBody(req) {
 }
 
 /**
- * 创建代理处理器
+ * 过滤不应直接转发给客户端的 hop-by-hop headers
+ */
+const HOP_BY_HOP = new Set(['transfer-encoding', 'connection', 'content-encoding']);
+function buildOutHeaders(headers) {
+  const out = {};
+  if (headers) {
+    if (headers[Symbol.iterator]) {
+      for (const [key, value] of headers) {
+        if (!HOP_BY_HOP.has(key)) out[key] = value;
+      }
+    } else {
+      for (const [key, value] of Object.entries(headers)) {
+        if (!HOP_BY_HOP.has(key)) out[key] = value;
+      }
+    }
+  }
+  return out;
+}
+
+const PROXY_MAX_RETRIES = 2;
+
+/**
+ * 创建代理处理器（支持 tunnel → HTTP 回退 + 多 upstream 重试）
  * @param {import('./registry.mjs').Registry} registry
  * @param {Function} [sendTunnelRequest] - tunnel 发送函数（来自 tunnel.mjs）
  * @returns {Function}
@@ -189,197 +209,219 @@ export function createProxyHandler(registry, sendTunnelRequest) {
     const startTime = Date.now();
     const requestId = req.keypoolRequestId || req.headers['x-request-id'] || req.headers['x-keypool-request-id'] || null;
 
-    // 解析 model 并 strip provider 前缀
+    // ─── Body 预处理（只做一次） ─────────────────────────
     let model = null;
     let strippedBody = body;
     if (body) {
-      // 🔴 RAW: log original body to file for debugging
-      try {
-        const rawDir = join(process.cwd(), '_raw_bodies');
-        if (!existsSync(rawDir)) mkdirSync(rawDir, { recursive: true });
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        writeFileSync(join(rawDir, `raw_${ts}.json`), body, 'utf8');
-        console.log(`📥 proxy RAW body saved to _raw_bodies/raw_${ts}.json (${body.length} bytes)`);
-      } catch (e) { console.error('Failed to save raw body:', e.message); }
       try {
         const parsed = JSON.parse(body);
         model = parsed.model || null;
-        // Strip provider prefix: "xiaomi/mimo-v2.5-pro" → "mimo-v2.5-pro"
+
+        let finalParsed = parsed;
+
         const strippedModel = stripModelPrefix(model);
         if (strippedModel !== model) {
-          parsed.model = strippedModel;
-          strippedBody = JSON.stringify(parsed);
+          finalParsed = { ...finalParsed, model: strippedModel };
           console.log(`🔧 proxy strip model prefix: "${model}" → "${strippedModel}"`);
         }
         model = strippedModel;
 
-        // Strip unsupported params (n, logprobs, etc.) for MiMo upstream
-        const paramResult = stripUnsupportedParams(strippedBody, model);
+        const paramResult = stripUnsupportedParams(JSON.stringify(finalParsed), model);
         if (paramResult) {
-          strippedBody = paramResult.strippedBody;
+          finalParsed = JSON.parse(paramResult.strippedBody);
           console.log(`🔧 proxy strip unsupported params: ${paramResult.removedParams.join(', ')}`);
         }
 
-        // Fix MiMo reasoning_content requirement
-        const fixResult = fixMimoReasoningContent(strippedBody, model);
+        const fixResult = fixMimoReasoningContent(JSON.stringify(finalParsed), model);
         if (fixResult.patched) {
-          strippedBody = fixResult.fixedBody;
+          finalParsed = JSON.parse(fixResult.fixedBody);
         }
-        // Debug: log the final forwarded body keys AND full body for upstream debugging
-        try {
-          const finalParsed = JSON.parse(strippedBody);
-          console.log(`📤 proxy forwarding keys: [${Object.keys(finalParsed).join(', ')}] model=${finalParsed.model}`);
-          console.log(`📋 proxy full body: ${strippedBody.substring(0, 2000)}`);
-        } catch {}
+
+        strippedBody = JSON.stringify(finalParsed);
+        console.log(`📤 proxy forwarding keys: [${Object.keys(finalParsed).join(', ')}] model=${finalParsed.model}`);
       } catch (err) { console.warn(`⚠️ proxy body parse error: ${err.message}`); }
     }
 
-    // 选择 verified upstream
-    const upstream = registry.chooseVerifiedUpstream(model);
-    if (!upstream) {
-      res.writeHead(503, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({
-        error: {
-          message: 'No healthy upstream available',
-          type: 'service_unavailable',
-        },
-      }));
-      return;
-    }
+    // ─── 重试循环 ───────────────────────────────────────
+    const excludeAccountIds = new Set();
+    let lastError = null;
 
-    // ─── 优先 Tunnel（WS 反连） ───────────────────────────
-    if (upstream.tunnel && sendTunnelRequest) {
-      try {
-        const tunnelResp = await sendTunnelRequest(upstream.tunnel, {
-          method: req.method,
-          path: req.url,
-          headers: { ...req.headers, host: undefined, ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
-          body: strippedBody || null,
-        }, { res, timeoutMs: getMimoTunnelTimeoutMs(strippedBody, model) });
+    for (let attempt = 0; attempt <= PROXY_MAX_RETRIES; attempt++) {
+      const isLastAttempt = attempt >= PROXY_MAX_RETRIES;
+      const upstream = registry.chooseVerifiedUpstream(model, { excludeAccountIds });
 
-        // 当 opts.res 被传入时，tunnel.mjs 会在收到 chunk 时直接写入 HTTP 响应（流式透传）。
-        // 此时 res.headersSent 已为 true，不应再二次写入。
-        if (!res.headersSent) {
-          const outHeaders = {};
-          if (tunnelResp.headers) {
-            for (const [key, value] of Object.entries(tunnelResp.headers)) {
-              if (['transfer-encoding', 'connection', 'content-encoding'].includes(key)) continue;
-              outHeaders[key] = value;
-            }
-          }
-          if (!outHeaders['content-type']) outHeaders['content-type'] = 'application/json';
-          if (!outHeaders['cache-control']) outHeaders['cache-control'] = 'no-cache';
-          res.writeHead(tunnelResp.status || 200, outHeaders);
-          res.end(tunnelResp.body || '');
-        }
-
-        const latencyMs = Date.now() - startTime;
-        const status = tunnelResp.status || 200;
-        if (status >= 400) {
-          console.error(`❌ upstream error [${upstream.accountId}] status=${status} requestId=${requestId || '-'} body=${(tunnelResp.body || '').substring(0, 500)}`);
-          registry.markProxyUpstreamError(upstream.accountId, status, tunnelResp.body);
-        } else {
-          registry.markProxySuccess(upstream.accountId, latencyMs);
-        }
-        return;
-      } catch (err) {
-        registry.markProxyFailure(upstream.accountId, err.message);
-        console.error(`❌ tunnel proxy failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
-        // 流式响应已开始写入时，无法再切换为错误 JSON 或 HTTP 回退
+      if (!upstream) {
         if (res.headersSent) {
           if (!res.writableEnded) { try { res.end(); } catch {} }
           return;
         }
-        // 回退到 HTTP 直连（如果有）
-        if (!upstream.proxyUrl && !upstream.baseUrl && !upstream.localUrl) {
-          res.writeHead(502, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({
-            error: { message: err.message || 'Tunnel proxy failed', type: 'proxy_error' },
-          }));
-          return;
-        }
-        // 有 HTTP fallback，继续往下
+        const status = lastError ? 502 : 503;
+        const message = lastError
+          ? `All upstreams failed: ${lastError}`
+          : 'No healthy upstream available';
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message, type: lastError ? 'proxy_error' : 'service_unavailable' } }));
+        return;
       }
-    }
 
-    // ─── HTTP 直连回退 ────────────────────────────────────
-    const baseUrl = upstream.proxyUrl || upstream.baseUrl || upstream.localUrl;
-    if (!baseUrl) {
-      res.writeHead(503, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({
-        error: { message: 'No upstream connection available', type: 'service_unavailable' },
-      }));
-      return;
-    }
+      if (attempt > 0) {
+        console.log(`🔄 proxy retry attempt ${attempt}/${PROXY_MAX_RETRIES} [${upstream.accountId}] excluded=[${[...excludeAccountIds].join(',')}]`);
+      }
 
-    const targetUrl = new URL(req.url, baseUrl).toString();
+      const attemptStart = Date.now();
 
-    // 转发 headers
-    const headers = { ...req.headers };
-    if (requestId) headers['x-keypool-request-id'] = requestId;
-    delete headers.host;
-    delete headers['content-length'];
+      // ─── Tunnel 路径 ───────────────────────────
+      if (upstream.tunnel && sendTunnelRequest) {
+        try {
+          const tunnelResp = await sendTunnelRequest(upstream.tunnel, {
+            method: req.method,
+            path: req.url,
+            headers: { ...req.headers, host: undefined, ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
+            body: strippedBody || null,
+          }, { res, timeoutMs: getMimoTunnelTimeoutMs(strippedBody, model) });
 
-    try {
-      const response = await fetch(targetUrl, {
-        method: req.method,
-        headers,
-        body: strippedBody || undefined,
-      });
+          // tunnel.mjs 传入 opts.res 后会直接写入 HTTP 响应（流式透传）
+          // 此时 res.headersSent 已为 true，不能再重试
+          if (res.headersSent) {
+            const status = tunnelResp?.status || 200;
+            if (status >= 400) {
+              registry.markProxyUpstreamError(upstream.accountId, status, tunnelResp?.body);
+            } else {
+              registry.markProxySuccess(upstream.accountId, Date.now() - attemptStart);
+            }
+            return;
+          }
 
-      // 检查是否流式
-      const contentType = response.headers.get('content-type') || '';
-      const isStream = contentType.includes('text/event-stream');
+          // 非流式：tunnel 返回完整响应
+          const status = tunnelResp.status || 200;
 
-      let text = null;
+          if (status >= 500) {
+            registry.markProxyUpstreamError(upstream.accountId, status, tunnelResp.body);
+            excludeAccountIds.add(upstream.accountId);
+            lastError = `[${upstream.accountId}] HTTP ${status}`;
+            console.warn(`⚠️ tunnel 5xx [${upstream.accountId}] status=${status}, ${isLastAttempt ? 'giving up' : 'retrying...'}`);
+            continue;
+          }
 
-      if (isStream) {
-        // 流式透传
-        const outHeaders = {};
-        response.headers.forEach((value, key) => {
-          if (['transfer-encoding', 'connection', 'content-encoding'].includes(key)) return;
-          outHeaders[key] = value;
+          // 4xx 或成功：直接返回
+          const outHeaders = buildOutHeaders(tunnelResp.headers);
+          if (!outHeaders['content-type']) outHeaders['content-type'] = 'application/json';
+          if (!outHeaders['cache-control']) outHeaders['cache-control'] = 'no-cache';
+          res.writeHead(status, outHeaders);
+          res.end(tunnelResp.body || '');
+
+          if (status >= 400) {
+            registry.markProxyUpstreamError(upstream.accountId, status, tunnelResp.body);
+          } else {
+            registry.markProxySuccess(upstream.accountId, Date.now() - attemptStart);
+          }
+          return;
+
+        } catch (err) {
+          registry.markProxyFailure(upstream.accountId, err.message);
+          console.error(`❌ tunnel failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
+
+          if (res.headersSent) {
+            if (!res.writableEnded) { try { res.end(); } catch {} }
+            return;
+          }
+
+          // 无 HTTP 回退 → 重试下一个 upstream
+          if (!upstream.proxyUrl && !upstream.baseUrl && !upstream.localUrl) {
+            excludeAccountIds.add(upstream.accountId);
+            lastError = `[${upstream.accountId}] ${err.message}`;
+            if (!isLastAttempt) continue;
+            res.writeHead(502, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: err.message || 'Tunnel proxy failed', type: 'proxy_error' } }));
+            return;
+          }
+          // 有 HTTP 回退，继续往下
+        }
+      }
+
+      // ─── HTTP 直连回退 ────────────────────────────
+      const baseUrl = upstream.proxyUrl || upstream.baseUrl || upstream.localUrl;
+      if (!baseUrl) {
+        excludeAccountIds.add(upstream.accountId);
+        lastError = `[${upstream.accountId}] no connection`;
+        if (!isLastAttempt) continue;
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'No upstream connection available', type: 'service_unavailable' } }));
+        return;
+      }
+
+      const targetUrl = new URL(req.url, baseUrl).toString();
+      const headers = { ...req.headers };
+      if (requestId) headers['x-keypool-request-id'] = requestId;
+      delete headers.host;
+      delete headers['content-length'];
+
+      try {
+        const response = await fetch(targetUrl, {
+          method: req.method,
+          headers,
+          body: strippedBody || undefined,
         });
+
+        const contentType = response.headers.get('content-type') || '';
+        const isStream = contentType.includes('text/event-stream');
+
+        // 5xx：可重试（headers 还没发给客户端）
+        if (response.status >= 500) {
+          if (res.headersSent) {
+            console.warn(`⚠️ HTTP 5xx after headers sent [${upstream.accountId}], cannot retry`);
+            const errBody = isStream ? '(streaming)' : await response.text();
+            registry.markProxyUpstreamError(upstream.accountId, response.status, errBody);
+            if (!res.writableEnded) { try { res.end(); } catch {} }
+            return;
+          }
+
+          const errBody = isStream ? '(streaming)' : await response.text();
+          registry.markProxyUpstreamError(upstream.accountId, response.status, errBody);
+          excludeAccountIds.add(upstream.accountId);
+          lastError = `[${upstream.accountId}] HTTP ${response.status}`;
+          console.warn(`⚠️ HTTP 5xx [${upstream.accountId}] status=${response.status}, ${isLastAttempt ? 'giving up' : 'retrying...'}`);
+          continue;
+        }
+
+        // 4xx 或成功：写回客户端
+        const outHeaders = buildOutHeaders(response.headers);
         res.writeHead(response.status, outHeaders);
-        if (response.body) {
+
+        if (isStream && response.body) {
           for await (const chunk of response.body) {
             res.write(chunk);
           }
+          res.end();
+        } else {
+          const text = await response.text();
+          res.end(text);
         }
-        res.end();
-      } else {
-        // 非流式
-        text = await response.text();
-        const outHeaders = {};
-        response.headers.forEach((value, key) => {
-          if (['transfer-encoding', 'connection', 'content-encoding'].includes(key)) return;
-          outHeaders[key] = value;
-        });
-        res.writeHead(response.status, outHeaders);
-        res.end(text);
-      }
 
-      const latencyMs = Date.now() - startTime;
-      if (response.status >= 400) {
-        const errBody = isStream ? '(streaming)' : text;
-        registry.markProxyUpstreamError(upstream.accountId, response.status, errBody);
-      } else {
-        registry.markProxySuccess(upstream.accountId, latencyMs);
-      }
-    } catch (err) {
-      registry.markProxyFailure(upstream.accountId, err.message);
-      console.error(`❌ proxy failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
+        const latencyMs = Date.now() - attemptStart;
+        if (response.status >= 400) {
+          registry.markProxyUpstreamError(upstream.accountId, response.status, '(forwarded)');
+        } else {
+          registry.markProxySuccess(upstream.accountId, latencyMs);
+        }
+        return;
 
-      // 返回 502
-      if (!res.headersSent) {
+      } catch (err) {
+        registry.markProxyFailure(upstream.accountId, err.message);
+        console.error(`❌ HTTP proxy failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
+
+        if (res.headersSent) {
+          if (!res.writableEnded) { try { res.end(); } catch {} }
+          return;
+        }
+
+        excludeAccountIds.add(upstream.accountId);
+        lastError = `[${upstream.accountId}] ${err.message}`;
+        if (!isLastAttempt) continue;
         res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: err.message || 'Upstream request failed', type: 'proxy_error' } }));
+        return;
       }
-      res.end(JSON.stringify({
-        error: {
-          message: err.message || 'Upstream request failed',
-          type: 'proxy_error',
-        },
-      }));
     }
   };
 }

@@ -43,12 +43,28 @@ export class Registry {
   /**
    * 获取已验证且可路由的 skill-proxy 上游实例
    * @param {string} [model]
+   * @param {object} [opts]
+   * @param {Set<string>} [opts.excludeAccountIds] - 排除的 accountId（重试时用）
+   * @param {boolean} [opts.includeUnhealthy=false] - 是否包含 healthOk=false 的实例
    * @returns {Array<object>}
    */
-  getVerifiedUpstreams(model) {
+  getVerifiedUpstreams(model, opts = {}) {
+    const { excludeAccountIds = new Set(), includeUnhealthy = false } = opts;
+    const now = Date.now();
+    const HEALTH_RECOVERY_MS = 60_000;
+
     const list = [...this.instances.values()]
       .filter(s => s && s.verified && (s.proxyUrl || s.baseUrl || s.localUrl || s.tunnel))
-      .filter(s => !s.status || ['ACTIVE', 'DEPLOYED_UNVERIFIED'].includes(s.status));
+      .filter(s => !s.status || ['ACTIVE', 'DEPLOYED_UNVERIFIED'].includes(s.status))
+      .filter(s => !excludeAccountIds.has(s.accountId))
+      .filter(s => {
+        if (s.healthOk !== false) return true;
+        if (includeUnhealthy) return true;
+        // allow recovery after 60s
+        const failAt = s.lastHealthErrorAt ? Date.parse(s.lastHealthErrorAt) || 0 : 0;
+        if (failAt && (now - failAt) > HEALTH_RECOVERY_MS) return true;
+        return false;
+      });
 
     const filtered = model
       ? list.filter(s => {
@@ -68,12 +84,51 @@ export class Registry {
   }
 
   /**
-   * 选择一个已验证的 skill-proxy 上游
+   * 选择一个已验证的 skill-proxy 上游（加权随机）
+   * 参考 new-api: 同优先级层内 weight + 10，随机数逐个扣减选中
    * @param {string} [model]
+   * @param {object} [opts]
+   * @param {Set<string>} [opts.excludeAccountIds] - 排除的 accountId
    * @returns {object|null}
    */
-  chooseVerifiedUpstream(model) {
-    return this.getVerifiedUpstreams(model)[0] || null;
+  chooseVerifiedUpstream(model, opts = {}) {
+    const { excludeAccountIds = new Set() } = opts;
+    const upstreams = this.getVerifiedUpstreams(model, { excludeAccountIds });
+    if (upstreams.length === 0) return null;
+
+    // 按优先级分层，取最高优先级层
+    const topPriority = Number.isFinite(upstreams[0].priority) ? upstreams[0].priority : 100;
+    const tier = upstreams.filter(u => {
+      const p = Number.isFinite(u.priority) ? u.priority : 100;
+      return p === topPriority;
+    });
+
+    if (tier.length === 1) return tier[0];
+
+    // 同层加权随机（参考 new-api: weight + 10，weight=0 也有基础概率）
+    const BASE_WEIGHT = 10;
+    let weightSum = 0;
+    const weighted = tier.map(u => {
+      const w = (Number.isFinite(u.weight) ? u.weight : 10) + BASE_WEIGHT;
+      weightSum += w;
+      return { upstream: u, weight: w };
+    });
+
+    let rand = Math.random() * weightSum;
+    for (const { upstream, weight } of weighted) {
+      rand -= weight;
+      if (rand <= 0) return upstream;
+    }
+    return weighted[weighted.length - 1].upstream;
+  }
+
+  /**
+   * 获取健康 upstream 数量
+   * @param {string} [model]
+   * @returns {number}
+   */
+  getHealthyUpstreamCount(model) {
+    return this.getVerifiedUpstreams(model).length;
   }
 
   /**
@@ -96,6 +151,7 @@ export class Registry {
     const state = this.instances.get(accountId);
     if (!state) return;
     state.lastHealthError = error;
+    state.lastHealthErrorAt = new Date().toISOString();
     state.lastProxyError = error;
     state.healthOk = false;
     state.consecutiveFailures = (state.consecutiveFailures || 0) + 1;

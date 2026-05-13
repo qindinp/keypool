@@ -16,7 +16,11 @@ function createMockRegistry(upstream = {}) {
   return {
     instance: base,
     calls,
-    chooseVerifiedUpstream() { return base; },
+    chooseVerifiedUpstream(model, opts = {}) {
+      const { excludeAccountIds = new Set() } = opts;
+      if (excludeAccountIds.has(base.accountId)) return null;
+      return base;
+    },
     markProxySuccess(id, latency) { calls.success++; },
     markProxyFailure(id, err) { calls.failure++; calls.lastError = err; },
     markProxyUpstreamError(id, status, body) { calls.upstreamError++; calls.lastUpstreamStatus = status; },
@@ -140,7 +144,7 @@ test('proxy: tunnel upstream 500 calls markProxyUpstreamError', async () => {
   assert.equal(registry.calls.upstreamError, 1);
   assert.equal(registry.calls.lastUpstreamStatus, 500);
   assert.equal(registry.calls.failure, 0, 'should not mark as transport failure');
-  assert.equal(res._status, 500);
+  assert.equal(res._status, 502); // 500 → upstream excluded → no more upstreams → 502
 });
 
 test('proxy: no upstream returns 503', async () => {
