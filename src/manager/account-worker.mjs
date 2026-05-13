@@ -30,6 +30,13 @@ export class AccountWorker {
     this.state = 'NONE';
     this.instance = null;
     this.cooldownUntil = 0;
+
+    // Initialize registry state with account config (weight, priority)
+    this.registry.updateInstanceState(this.account.id, {
+      accountId: this.account.id,
+      weight: this.account.weight,
+      priority: this.account.priority,
+    });
   }
 
   snapshot() {

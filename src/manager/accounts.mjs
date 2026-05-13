@@ -42,6 +42,7 @@ function normalizeAccount(raw, index, accountsPath) {
     name: raw.name || id,
     enabled: raw.enabled !== false,
     priority: Number.isFinite(raw.priority) ? raw.priority : 100,
+    weight: Number.isFinite(raw.weight) ? raw.weight : 10,
     cookie: resolveCookie(raw, accountsPath),
     tags: Array.isArray(raw.tags) ? raw.tags : [],
     meta: raw.meta && typeof raw.meta === 'object' ? raw.meta : {},
@@ -80,6 +81,9 @@ export function validateAccountsConfig(data) {
     }
     if ('priority' in account && !Number.isFinite(account.priority)) {
       throw new Error(`Invalid ${label}.priority: expected finite number`);
+    }
+    if ('weight' in account && !Number.isFinite(account.weight)) {
+      throw new Error(`Invalid ${label}.weight: expected finite number`);
     }
     if ('tags' in account && !Array.isArray(account.tags)) {
       throw new Error(`Invalid ${label}.tags: expected array`);
