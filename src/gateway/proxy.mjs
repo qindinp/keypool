@@ -198,6 +198,87 @@ function buildOutHeaders(headers) {
 
 const PROXY_MAX_RETRIES = 2;
 
+function createToolCallDiagnostics(body, model, requestId) {
+  if (!body || !model?.startsWith('mimo-')) return null;
+  try {
+    const parsed = JSON.parse(body);
+    const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    const tools = Array.isArray(parsed.tools) ? parsed.tools : [];
+    const hasToolChoice = parsed.tool_choice && parsed.tool_choice !== 'none';
+    const toolResults = messages.filter((m) => m?.role === 'tool').length;
+    const assistantToolCalls = messages.filter((m) => m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0).length;
+
+    if (tools.length === 0 && !hasToolChoice && toolResults === 0 && assistantToolCalls === 0) return null;
+
+    return {
+      requestId: requestId || '-',
+      model,
+      stream: !!parsed.stream,
+      tools: tools.length,
+      messages: messages.length,
+      toolResults,
+      assistantToolCalls,
+      bodyBytes: Buffer.byteLength(body, 'utf8'),
+      startMs: Date.now(),
+      firstChunkMs: null,
+      chunks: 0,
+      bytes: 0,
+      sawToolCalls: false,
+      sawFinishToolCalls: false,
+      sawDone: false,
+      loggedEnd: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function installToolCallDiagnostics(res, diag) {
+  if (!diag || res.__keypoolToolDiagInstalled) return;
+  res.__keypoolToolDiagInstalled = true;
+
+  const originalWrite = res.write.bind(res);
+  res.write = (chunk, ...args) => {
+    try {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      diag.chunks += 1;
+      diag.bytes += buf.length;
+      if (diag.firstChunkMs === null) diag.firstChunkMs = Date.now();
+
+      const text = buf.toString('utf8');
+      if (text.includes('tool_calls')) diag.sawToolCalls = true;
+      if (text.includes('finish_reason') && text.includes('tool_calls')) diag.sawFinishToolCalls = true;
+      if (text.includes('[DONE]')) diag.sawDone = true;
+    } catch {}
+    return originalWrite(chunk, ...args);
+  };
+
+  const originalEnd = res.end.bind(res);
+  res.end = (chunk, ...args) => {
+    if (chunk) {
+      try {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        diag.bytes += buf.length;
+        const text = buf.toString('utf8');
+        if (text.includes('tool_calls')) diag.sawToolCalls = true;
+        if (text.includes('finish_reason') && text.includes('tool_calls')) diag.sawFinishToolCalls = true;
+        if (text.includes('[DONE]')) diag.sawDone = true;
+      } catch {}
+    }
+
+    if (!diag.loggedEnd) {
+      diag.loggedEnd = true;
+      console.log(`🧰 MiMo tool diag end requestId=${diag.requestId} model=${diag.model} stream=${diag.stream} chunks=${diag.chunks} bytes=${diag.bytes} durationMs=${Date.now() - diag.startMs} firstChunkMs=${diag.firstChunkMs ? diag.firstChunkMs - diag.startMs : 'none'} sawToolCalls=${diag.sawToolCalls} sawFinishToolCalls=${diag.sawFinishToolCalls} sawDone=${diag.sawDone}`);
+    }
+    return originalEnd(chunk, ...args);
+  };
+}
+
+function logToolCallFailure(diag, accountId, err) {
+  if (!diag) return;
+  console.error(`🧰 MiMo tool diag failure requestId=${diag.requestId} accountId=${accountId || '-'} model=${diag.model} stream=${diag.stream} chunks=${diag.chunks} bytes=${diag.bytes} durationMs=${Date.now() - diag.startMs} firstChunkMs=${diag.firstChunkMs ? diag.firstChunkMs - diag.startMs : 'none'} sawToolCalls=${diag.sawToolCalls} sawFinishToolCalls=${diag.sawFinishToolCalls} sawDone=${diag.sawDone} error=${err?.message || err}`);
+}
+
 /**
  * 创建代理处理器（支持 tunnel → HTTP 回退 + 多 upstream 重试）
  * @param {import('./registry.mjs').Registry} registry
@@ -240,6 +321,12 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         strippedBody = JSON.stringify(finalParsed);
         console.log(`📤 proxy forwarding keys: [${Object.keys(finalParsed).join(', ')}] model=${finalParsed.model}`);
       } catch (err) { console.warn(`⚠️ proxy body parse error: ${err.message}`); }
+    }
+
+    const toolDiag = createToolCallDiagnostics(strippedBody, model, requestId);
+    if (toolDiag) {
+      console.log(`🧰 MiMo tool diag start requestId=${toolDiag.requestId} model=${toolDiag.model} stream=${toolDiag.stream} tools=${toolDiag.tools} messages=${toolDiag.messages} toolResults=${toolDiag.toolResults} assistantToolCalls=${toolDiag.assistantToolCalls} bodyBytes=${toolDiag.bodyBytes}`);
+      installToolCallDiagnostics(res, toolDiag);
     }
 
     // ─── 重试循环 ───────────────────────────────────────
@@ -318,6 +405,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
           return;
 
         } catch (err) {
+          logToolCallFailure(toolDiag, upstream.accountId, err);
           registry.markProxyFailure(upstream.accountId, err.message);
           console.error(`❌ tunnel failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
 
@@ -407,6 +495,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         return;
 
       } catch (err) {
+        logToolCallFailure(toolDiag, upstream.accountId, err);
         registry.markProxyFailure(upstream.accountId, err.message);
         console.error(`❌ HTTP proxy failed [${upstream.accountId}] requestId=${requestId || '-'}: ${err.message}`);
 
