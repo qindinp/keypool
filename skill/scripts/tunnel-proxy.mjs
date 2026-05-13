@@ -14,10 +14,18 @@ import { createServer } from 'node:http';
 
 // ─── 配置 ──────────────────────────────────────────────────
 
-const GATEWAY_WS_URL = '__KEYPOOL_GATEWAY_URL__';
-const ACCOUNT_ID = '__KEYPOOL_ACCOUNT_ID__';
-const RUN_ID = '__KEYPOOL_RUN_ID__';
-const HEALTH_PORT = 9201;
+function envOrTemplate(envName, templateValue) {
+  const value = process.env[envName];
+  if (value && value.trim()) return value.trim();
+  if (templateValue && !/^__.+__$/.test(templateValue)) return templateValue;
+  console.error(`[tunnel-proxy] missing required env ${envName}`);
+  process.exit(1);
+}
+
+const GATEWAY_WS_URL = envOrTemplate('KEYPOOL_GATEWAY_URL', '__KEYPOOL_GATEWAY_URL__');
+const ACCOUNT_ID = envOrTemplate('KEYPOOL_ACCOUNT_ID', '__KEYPOOL_ACCOUNT_ID__');
+const RUN_ID = envOrTemplate('KEYPOOL_RUN_ID', '__KEYPOOL_RUN_ID__');
+const HEALTH_PORT = Number(process.env.KEYPOOL_HEALTH_PORT || 9201);
 
 // ─── 1. 定位 ws 模块 ─────────────────────────────────────
 
