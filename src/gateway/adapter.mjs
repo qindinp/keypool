@@ -26,6 +26,7 @@ export function anthropicToOpenAI(body) {
     const role = msg.role;
     let content;
     let toolCalls = undefined;
+    let reasoningContent = undefined;
 
     if (typeof msg.content === 'string') {
       content = msg.content;
@@ -36,6 +37,11 @@ export function anthropicToOpenAI(body) {
       for (const block of msg.content) {
         if (block.type === 'text') {
           parts.push(block.text);
+        } else if (block.type === 'thinking') {
+          const thinkingText = block.thinking || block.text || '';
+          reasoningContent = reasoningContent
+            ? `${reasoningContent}\n${thinkingText}`
+            : thinkingText;
         } else if (block.type === 'image') {
           parts.push({
             type: 'image_url',
@@ -103,7 +109,8 @@ export function anthropicToOpenAI(body) {
 
     const oaiMsg = { role, content };
     if (toolCalls) oaiMsg.tool_calls = toolCalls;
-    if (content !== undefined || toolCalls) {
+    if (reasoningContent !== undefined) oaiMsg.reasoning_content = reasoningContent;
+    if (content !== undefined || toolCalls || reasoningContent !== undefined) {
       messages.push(oaiMsg);
     }
   }

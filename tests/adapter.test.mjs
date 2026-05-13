@@ -58,6 +58,38 @@ test('anthropicToOpenAI: tool_use blocks become tool_calls', () => {
   assert.equal(msg.tool_calls[0].function.arguments, '{"city":"Beijing"}');
 });
 
+test('anthropicToOpenAI: thinking block becomes reasoning_content', () => {
+  const result = anthropicToOpenAI({
+    messages: [{
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'Let me think step by step...' },
+        { type: 'text', text: 'The answer is 42.' },
+      ],
+    }],
+  });
+  const msg = result.messages[0];
+  assert.equal(msg.role, 'assistant');
+  assert.equal(msg.reasoning_content, 'Let me think step by step...');
+  assert.equal(msg.content, 'The answer is 42.');
+});
+
+test('anthropicToOpenAI: multiple thinking blocks are merged into reasoning_content', () => {
+  const result = anthropicToOpenAI({
+    messages: [{
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'First thought.' },
+        { type: 'thinking', thinking: 'Second thought.' },
+        { type: 'text', text: 'Final answer.' },
+      ],
+    }],
+  });
+  const msg = result.messages[0];
+  assert.equal(msg.reasoning_content, 'First thought.\nSecond thought.');
+  assert.equal(msg.content, 'Final answer.');
+});
+
 test('anthropicToOpenAI: tool_result becomes tool role message', () => {
   const result = anthropicToOpenAI({
     messages: [{
