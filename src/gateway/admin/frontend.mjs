@@ -308,9 +308,7 @@ export function renderAdminPage() {
           metricCard('可重试失败', m.retryableFailures ?? 0, (m.retryableFailures ?? 0) > 0 ? 'warn' : ''),
           metricCard('创建中', m.creatingInstances ?? 0, (m.creatingInstances ?? 0) > 0 ? 'warn' : '')
         ]),
-        metricGroup('账号与服务', '配置与运行状态', [
-          metricCard('账号总数', m.accounts ?? 0),
-          metricCard('已启用', m.enabledAccounts ?? 0, 'ok'),
+        metricGroup('服务状态', 'Gateway 运行信息', [
           metricCard('服务状态', serviceStatus, serviceStatus === 'ok' ? 'ok' : 'warn'),
           metricCard('Manager', managerRunning ? '运行中' : '未运行', managerRunning ? 'ok' : 'warn')
         ])

@@ -68,7 +68,9 @@ export async function stopManager(manager) {
 export async function restartManager(manager) {
   const stopped = await stopManager(manager);
   if (!stopped.ok) return stopped;
-  return startManager(manager);
+  const started = await startManager(manager);
+  if (!started.ok) return started;
+  return { ...started, message: 'Manager 已重启' };
 }
 
 export async function runAccountAction(manager, accountId, action) {
