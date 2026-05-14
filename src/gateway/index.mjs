@@ -11,7 +11,7 @@ import { createServer } from 'node:http';
 import { PassThrough } from 'node:stream'; // kept for potential future use
 import { Registry } from './registry.mjs';
 import { createProxyHandler, readBody } from './proxy.mjs';
-import { createAdminHandler } from './admin.mjs';
+import { createAdminHandler } from './admin/index.mjs';
 import { anthropicToOpenAI, openAIToAnthropic, openAIChunkToAnthropicEvents } from './adapter.mjs';
 import { createTunnelServer } from './tunnel.mjs';
 import { stripModelPrefix, stripUnsupportedParams, fixMimoReasoningContent, getMimoTunnelTimeoutMs } from './proxy.mjs';
