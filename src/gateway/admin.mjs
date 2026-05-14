@@ -430,6 +430,7 @@ async function mutateAccountsConfig(mutator, manager, auditAction, auditTarget) 
     if (result.restartManagerAfterSave && manager) {
       const restarted = await restartManager(manager);
       if (!restarted.ok) {
+        if (auditAction) logAudit(auditAction, auditTarget || '-', `配置已保存，但 Manager 重载失败：${restarted.message || restarted.error || 'unknown'}`, false);
         return {
           ok: false,
           error: 'manager_restart_failed',
