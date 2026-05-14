@@ -130,15 +130,15 @@ describe('fixMimoReasoningContent', () => {
     assert.equal(parsed.messages[0].reasoning_content, null);
   });
 
-  it('still injects reasoning_content:null into non-tool assistant messages', () => {
+  it('does not inject reasoning_content:null into non-tool assistant messages', () => {
     const body = JSON.stringify({
       model: 'mimo-v2.5-pro',
       messages: [{ role: 'assistant', content: 'hello' }],
     });
     const result = fixMimoReasoningContent(body, 'mimo-v2.5-pro');
-    assert.equal(result.patched, true);
+    assert.equal(result.patched, false);
     const parsed = JSON.parse(result.fixedBody);
-    assert.equal(parsed.messages[0].reasoning_content, null);
+    assert.equal('reasoning_content' in parsed.messages[0], false);
   });
 
   it('preserves existing reasoning_content', () => {

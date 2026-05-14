@@ -116,6 +116,10 @@ export function fixMimoReasoningContent(body, model) {
     let missingToolCalls = 0;
 
     for (const msg of messages) {
+      if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+        console.warn(`⚠️ proxy fix: skip non-object message in MiMo reasoning_content shim type=${Array.isArray(msg) ? 'array' : typeof msg}`);
+        continue;
+      }
       if (msg.role !== 'assistant') continue;
       if ('reasoning_content' in msg) {
         existing++;
@@ -123,27 +127,31 @@ export function fixMimoReasoningContent(body, model) {
       }
 
       // Xiaomi MiMo thinking-mode requirement (2026-05-12 notice):
-      // in multi-turn agent chats, historical assistant messages containing
-      // tool_calls must carry reasoning_content back to the API. If the client
-      // already preserved the original value, keep it. If it omitted the field,
-      // inject null as a compatibility shim; native probing shows a missing
-      // field returns 400, while null is accepted. This cannot reconstruct the
-      // original chain-of-thought, but it prevents hard request failure.
-      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-        missingToolCalls++;
+      // historical assistant messages containing tool_calls must carry
+      // reasoning_content back to the API. OpenClaw synthetic compaction
+      // summaries can also appear as assistant messages; do not mark those as
+      // thinking-mode turns unless they actually contain tool_calls.
+      if (!Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0) {
+        continue;
       }
 
+      missingToolCalls++;
+      // Native probing shows a missing field returns 400, while null is
+      // accepted. This cannot reconstruct the original chain-of-thought, but
+      // it prevents hard request failure without polluting ordinary assistant
+      // messages or compaction summaries.
       msg.reasoning_content = null;
       injected++;
       patched = true;
     }
 
     if (patched || missingToolCalls || existing) {
-      console.log(`🔧 proxy fix: MiMo reasoning_content existing=${existing} injectedNull=${injected} missingToolCallAssistants=${missingToolCalls}`);
+      console.log(`🔧 proxy fix: MiMo reasoning_content existing=${existing} injectedNull=${injected} toolCallAssistantsMissing=${missingToolCalls}`);
     }
     if (patched) return { fixedBody: JSON.stringify(parsed), patched: true };
     return { fixedBody: body, patched: false };
-  } catch {
+  } catch (err) {
+    console.warn(`⚠️ proxy fix: MiMo reasoning_content shim skipped: ${err.message}`);
     return { fixedBody: body, patched: false };
   }
 }

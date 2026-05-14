@@ -22,8 +22,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = resolve(__dirname, '..', '..', 'skill');
 
-const HEARTBEAT_INTERVAL = 30_000;
-const HEARTBEAT_TIMEOUT = 10_000;
+const HEARTBEAT_INTERVAL = 120_000; // 2min — 长请求期间避免误杀 tunnel
+const HEARTBEAT_TIMEOUT = 60_000;  // 1min — 总计 3min 无数据才断连
 
 /**
  * 递归读取 skill 目录中的所有文件
