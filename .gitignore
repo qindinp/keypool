@@ -7,8 +7,16 @@ config.json
 .key-exchange-state.json
 .controller-state.json
 .controller.log
-.tunnel-url
-config.json
 .manager/
 accounts.json
 .keypool-audit.json
+
+# Temp / debug files
+_tmp*
+_diag*
+_start_*
+.keypool-bg.pid
+.artifact-stage/
+runtime-monitor/
+dist/
+*.zip
