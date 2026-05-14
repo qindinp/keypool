@@ -287,6 +287,7 @@ async function createAccount(manager, req) {
   const cookie = String(payload?.cookie || '').trim();
   const enabled = payload?.enabled !== false;
   const priority = Number.isFinite(Number(payload?.priority)) ? Number(payload.priority) : 100;
+  const weight = Number.isFinite(Number(payload?.weight)) ? Math.max(0, Math.round(Number(payload.weight))) : 100;
   const tags = normalizeTags(payload?.tags);
 
   if (!id) return { ok: false, error: 'id_required', message: '账号 ID 不能为空' };
@@ -298,7 +299,7 @@ async function createAccount(manager, req) {
       return { ok: false, error: 'account_exists', message: `账号 ${id} 已存在` };
     }
 
-    list.push({ id, name, enabled, priority, tags, cookie });
+    list.push({ id, name, enabled, priority, weight, tags, cookie });
     return {
       ok: true,
       accountId: id,
@@ -329,6 +330,7 @@ async function updateAccount(manager, accountId, req) {
     const nextCookie = typeof payload?.cookie === 'string' ? payload.cookie.trim() : '';
     const nextEnabled = payload?.enabled !== undefined ? payload.enabled !== false : target.enabled !== false;
     const nextPriority = payload?.priority !== undefined ? (Number.isFinite(Number(payload.priority)) ? Number(payload.priority) : 100) : (Number.isFinite(Number(target.priority)) ? Number(target.priority) : 100);
+    const nextWeight = payload?.weight !== undefined ? (Number.isFinite(Number(payload.weight)) ? Math.max(0, Math.round(Number(payload.weight))) : 100) : (Number.isFinite(Number(target.weight)) ? Math.max(0, Math.round(Number(target.weight))) : 100);
     const nextTags = payload?.tags !== undefined ? normalizeTags(payload.tags) : (Array.isArray(target.tags) ? target.tags : []);
 
     if (!nextId) return { ok: false, error: 'id_required', message: '账号 ID 不能为空' };
@@ -339,6 +341,7 @@ async function updateAccount(manager, accountId, req) {
     target.name = nextName || nextId;
     target.enabled = nextEnabled;
     target.priority = nextPriority;
+    target.weight = nextWeight;
     target.tags = nextTags;
     if (nextCookie) {
       target.cookie = nextCookie;
@@ -403,7 +406,8 @@ async function mutateAccountsConfig(mutator, manager) {
       }
     }
 
-    return result;
+    const { raw: _raw, list: _list, ...sanitized } = result;
+    return sanitized;
   } catch (error) {
     return {
       ok: false,
@@ -419,9 +423,19 @@ function normalizeTags(value) {
   return [];
 }
 
+const MAX_BODY_BYTES = 512 * 1024; // 512KB
+
 async function readJsonBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buf.length;
+    if (totalBytes > MAX_BODY_BYTES) {
+      throw new Error(`请求体超过大小限制 (${MAX_BODY_BYTES / 1024}KB)`);
+    }
+    chunks.push(buf);
+  }
   const raw = Buffer.concat(chunks).toString('utf8').trim();
   return raw ? JSON.parse(raw) : {};
 }
@@ -535,6 +549,7 @@ function loadAccountsSummary() {
         tags: Array.isArray(item?.tags) ? item.tags : [],
         hasCookie: typeof item?.cookie === 'string' && item.cookie.trim().length > 0,
         hasCookieFile: typeof item?.cookieFile === 'string' && item.cookieFile.trim().length > 0,
+        weight: Number.isFinite(Number(item?.weight)) ? Math.max(0, Math.round(Number(item.weight))) : 100,
       })),
     };
   } catch (error) {
@@ -624,9 +639,20 @@ function renderAdminPage() {
     @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; } }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
+    .toast-container { position: fixed; top: 20px; right: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+    .toast { pointer-events: auto; padding: 12px 18px; border-radius: 12px; font-size: 14px; color: var(--text); background: var(--panel2); border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,.35); transform: translateX(120%); transition: transform .3s ease; max-width: 360px; word-break: break-word; }
+    .toast.show { transform: translateX(0); }
+    .toast.ok { border-color: var(--ok); }
+    .toast.warn { border-color: var(--warn); }
+    .toast.bad { border-color: var(--bad); }
+    .card-toggle { cursor: pointer; color: var(--accent); font-size: 12px; margin-top: 8px; display: inline-block; }
+    .card-toggle:hover { text-decoration: underline; }
+    .card-extra { display: none; }
+    .card-extra.expanded { display: block; }
   </style>
 </head>
 <body>
+  <div class="toast-container" id="toastContainer"></div>
   <div class="shell">
     <div class="header">
       <div class="title">
@@ -681,7 +707,7 @@ function renderAdminPage() {
           <button class="btn" id="newAccountBtn">新增账号</button>
         </div>
         <table>
-          <thead><tr><th>ID</th><th>名称</th><th>启用</th><th>优先级</th><th>标签</th><th>Cookie</th><th>操作</th></tr></thead>
+          <thead><tr><th>ID</th><th>名称</th><th>启用</th><th>优先级</th><th>Weight</th><th>标签</th><th>Cookie</th><th>操作</th></tr></thead>
           <tbody id="accountsBody"></tbody>
         </table>
       </div>
@@ -714,6 +740,11 @@ function renderAdminPage() {
             <label for="accountPriorityInput">优先级</label>
             <input id="accountPriorityInput" name="priority" type="number" step="1" value="100">
           </div>
+          <div class="field">
+            <label for="accountWeightInput">Weight（权重）</label>
+            <input id="accountWeightInput" name="weight" type="number" step="1" min="0" value="100">
+            <div class="hint">同优先级层内负载均衡权重，0 仍有基础概率。默认 100。</div>
+          </div>
           <div class="field full">
             <label for="accountTagsInput">标签</label>
             <input id="accountTagsInput" name="tags" placeholder="例如：main, cn, backup">
@@ -743,8 +774,9 @@ function renderAdminPage() {
     async function refresh() { const [overview, agentsRes, instancesRes, accountsRes] = await Promise.all([ fetch('/admin/api/overview').then(r => r.json()), fetch('/admin/api/agents').then(r => r.json()), fetch('/admin/api/instances').then(r => r.json()), fetch('/admin/api/accounts').then(r => r.json()) ]); const accounts = accountsRes.accounts || []; state.accounts = accounts; renderOverview(overview); renderAgents(agentsRes.agents || []); renderInstances(Object.values(instancesRes.instances || {})); renderAccounts(accounts); }
     function renderOverview(data) { document.getElementById('accessUrl').textContent = data?.service?.accessUrl || '-'; document.getElementById('metrics').innerHTML = [ metricCard('服务状态', data?.service?.status || '-'), metricCard('Manager', data?.service?.manager?.running ? '运行中' : '未运行', data?.service?.manager?.running ? 'ok' : 'warn'), metricCard('Agents', data?.metrics?.agents ?? 0), metricCard('Healthy', data?.metrics?.healthyAgents ?? 0, 'ok'), metricCard('Inflight', data?.metrics?.inflight ?? 0), metricCard('实例', data?.metrics?.instances ?? 0), metricCard('已验证', data?.metrics?.verifiedInstances ?? 0, 'ok'), metricCard('可重试失败', data?.metrics?.retryableFailures ?? 0, 'warn'), metricCard('History确认', data?.metrics?.historyConfirmedStages ?? 0, 'warn'), metricCard('异常', data?.metrics?.failedInstances ?? 0, 'bad') ].join(''); }
     function renderAgents(agents) { const root = document.getElementById('agentsGrid'); if (!agents.length) { root.innerHTML = '<div class="card empty">当前没有 Agent 连接到 Gateway</div>'; return; } root.innerHTML = agents.map(agent => { const health = agent.healthy ? '<span class="pill ok">健康</span>' : '<span class="pill bad">异常</span>'; return '<div class="card">' + '<h3>' + escapeHtml(agent.agentId) + '</h3>' + '<div class="sub">account=' + escapeHtml(agent.accountId) + ' · instance=' + escapeHtml(agent.instanceId || '-') + '</div>' + '<div style="margin-top:8px">' + health + '</div>' + '<div class="kv">' + '<div class="k">模型</div><div class="v mono">' + escapeHtml((agent.models || []).join(', ') || '-') + '</div>' + '<div class="k">连接时长</div><div class="v">' + escapeHtml(fmtAgo(agent.connectedAgoMs)) + '</div>' + '<div class="k">Inflight</div><div class="v">' + escapeHtml(agent.inflight) + '</div>' + '<div class="k">成功/失败</div><div class="v">' + escapeHtml(agent.successCount + ' / ' + agent.failureCount) + '</div>' + '<div class="k">平均延迟</div><div class="v">' + escapeHtml(agent.avgLatency + 'ms') + '</div>' + '</div></div>'; }).join(''); }
-    function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">绑定 Agent</div><div class="v mono">' + escapeHtml(item.agentId || '-') + '</div>' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + '</div>' + '<div class="k">阶段状态</div><div class="v">' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">Proxy URL</div><div class="v mono">' + escapeHtml(item.proxyUrl || '-') + '</div>' + '<div class="k">Tailnet IP</div><div class="v mono">' + escapeHtml(item.currentTailnetIpUrl || '-') + '</div>' + '<div class="k">Tailnet 域名</div><div class="v mono">' + escapeHtml(item.currentTailnetUrl || '-') + '</div>' + '<div class="k">Share URL</div><div class="v mono">' + escapeHtml(item.currentShareUrl || '-') + '</div>' + '<div class="k">Local URL</div><div class="v mono">' + escapeHtml(item.currentLocalUrl || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(item.lastDeployAt || '-') + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(item.lastVerifiedAt || '-') + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + actionButtons(item.accountId) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>').join(''); }
-    function renderAccounts(accounts) { const body = document.getElementById('accountsBody'); if (!accounts.length) { body.innerHTML = '<tr><td colspan="7" class="empty">未找到账号配置</td></tr>'; return; } body.innerHTML = accounts.map(item => '<tr>' + '<td class="mono">' + escapeHtml(item.id) + '</td>' + '<td>' + escapeHtml(item.name) + '</td>' + '<td>' + escapeHtml(item.enabled ? '是' : '否') + '</td>' + '<td>' + escapeHtml(item.priority) + '</td>' + '<td>' + escapeHtml((item.tags || []).join(', ') || '-') + '</td>' + '<td>' + escapeHtml(item.hasCookie ? '已配置' : (item.hasCookieFile ? 'cookieFile' : '缺失')) + '</td>' + '<td><div class="action-row"><button class="btn" data-edit-account="' + escapeHtml(item.id) + '">编辑</button><button class="btn" data-delete-account="' + escapeHtml(item.id) + '">删除</button></div></td>' + '</tr>').join(''); }
+    function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => { const id = 'inst-' + escapeHtml(item.accountId); return '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">绑定 Agent</div><div class="v mono">' + escapeHtml(item.agentId || '-') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(item.lastDeployAt || '-') + '</div>' + '</div>' + '<span class="card-toggle" onclick="toggleCard(\'' + id + '\')">展开详情 ▾</span>' + '<div class="card-extra" id="' + id + '">' + '<div class="kv">' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">Proxy URL</div><div class="v mono">' + escapeHtml(item.proxyUrl || '-') + '</div>' + '<div class="k">Tailnet IP</div><div class="v mono">' + escapeHtml(item.currentTailnetIpUrl || '-') + '</div>' + '<div class="k">Tailnet 域名</div><div class="v mono">' + escapeHtml(item.currentTailnetUrl || '-') + '</div>' + '<div class="k">Share URL</div><div class="v mono">' + escapeHtml(item.currentShareUrl || '-') + '</div>' + '<div class="k">Local URL</div><div class="v mono">' + escapeHtml(item.currentLocalUrl || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(item.lastVerifiedAt || '-') + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + '</div>' + actionButtons(item.accountId) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>'; }).join(''); }
+    function toggleCard(id) { const el = document.getElementById(id); if (!el) return; el.classList.toggle('expanded'); const toggle = el.previousElementSibling; if (toggle) toggle.textContent = el.classList.contains('expanded') ? '收起 ▴' : '展开详情 ▾'; }
+    function renderAccounts(accounts) { const body = document.getElementById('accountsBody'); if (!accounts.length) { body.innerHTML = '<tr><td colspan="8" class="empty">未找到账号配置</td></tr>'; return; } body.innerHTML = accounts.map(item => '<tr>' + '<td class="mono">' + escapeHtml(item.id) + '</td>' + '<td>' + escapeHtml(item.name) + '</td>' + '<td>' + escapeHtml(item.enabled ? '是' : '否') + '</td>' + '<td>' + escapeHtml(item.priority) + '</td>' + '<td>' + escapeHtml(item.weight ?? 100) + '</td>' + '<td>' + escapeHtml((item.tags || []).join(', ') || '-') + '</td>' + '<td>' + escapeHtml(item.hasCookie ? '已配置' : (item.hasCookieFile ? 'cookieFile' : '缺失')) + '</td>' + '<td><div class="action-row"><button class="btn" data-edit-account="' + escapeHtml(item.id) + '">编辑</button><button class="btn" data-delete-account="' + escapeHtml(item.id) + '">删除</button></div></td>' + '</tr>').join(''); }
     function bindTabs() { document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.tab').forEach(t => t.classList.remove('active')); document.querySelectorAll('.panel').forEach(p => p.classList.remove('active')); tab.classList.add('active'); document.querySelector('[data-panel="' + tab.dataset.tab + '"]').classList.add('active'); })); }
     function bindRefresh() { const select = document.getElementById('refreshMs'); const applyTimer = () => { if (state.timer) clearInterval(state.timer); const ms = Number(select.value || 0); if (ms > 0) state.timer = setInterval(() => refresh().catch(showError), ms); }; select.addEventListener('change', applyTimer); applyTimer(); document.getElementById('refreshBtn').addEventListener('click', () => refresh().catch(showError)); }
     function openAccountModal(mode, initial = {}) {
@@ -758,6 +790,7 @@ function renderAdminPage() {
       document.getElementById('accountNameInput').value = initial.name || initial.id || '';
       document.getElementById('accountEnabledInput').value = initial.enabled === false ? 'false' : 'true';
       document.getElementById('accountPriorityInput').value = Number.isFinite(Number(initial.priority)) ? Number(initial.priority) : 100;
+      document.getElementById('accountWeightInput').value = Number.isFinite(Number(initial.weight)) ? Math.max(0, Math.round(Number(initial.weight))) : 100;
       document.getElementById('accountTagsInput').value = Array.isArray(initial.tags) ? initial.tags.join(', ') : (initial.tags || '');
       document.getElementById('accountCookieInput').value = '';
       document.getElementById('accountCookieHint').textContent = mode === 'create'
@@ -779,22 +812,24 @@ function renderAdminPage() {
         name: document.getElementById('accountNameInput').value.trim(),
         enabled: document.getElementById('accountEnabledInput').value !== 'false',
         priority: Number(document.getElementById('accountPriorityInput').value || 100),
+        weight: Number(document.getElementById('accountWeightInput').value || 100),
         tags: document.getElementById('accountTagsInput').value.trim(),
         cookie: document.getElementById('accountCookieInput').value.trim(),
       };
     }
 
+    function showToast(msg, type = 'ok') { const c = document.getElementById('toastContainer'); const el = document.createElement('div'); el.className = 'toast ' + type; el.textContent = msg; c.appendChild(el); requestAnimationFrame(() => el.classList.add('show')); setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000); }
     function bindActions() {
-      document.getElementById('copyBtn').addEventListener('click', async () => { const text = document.getElementById('accessUrl').textContent || ''; try { await navigator.clipboard.writeText(text); alert('已复制接入地址'); } catch (error) { alert('复制失败：' + error.message); } });
-      document.getElementById('newAccountBtn').addEventListener('click', () => openAccountModal('create', { enabled: true, priority: 100, tags: [] }));
+      document.getElementById('copyBtn').addEventListener('click', async () => { const text = document.getElementById('accessUrl').textContent || ''; try { await navigator.clipboard.writeText(text); showToast('已复制接入地址'); } catch (error) { showToast('复制失败：' + error.message, 'bad'); } });
+      document.getElementById('newAccountBtn').addEventListener('click', () => openAccountModal('create', { enabled: true, priority: 100, weight: 100, tags: [] }));
       document.getElementById('cancelAccountBtn').addEventListener('click', () => closeAccountModal());
       document.getElementById('accountModalBackdrop').addEventListener('click', (event) => { if (event.target.id === 'accountModalBackdrop') closeAccountModal(); });
       document.getElementById('accountForm').addEventListener('submit', async (event) => {
         event.preventDefault();
         const payload = collectAccountFormPayload();
-        if (!payload.id) return alert('账号 ID 不能为空');
-        if (!payload.name) return alert('账号名称不能为空');
-        if (state.modalMode === 'create' && !payload.cookie) return alert('新增账号时必须填写 Cookie');
+        if (!payload.id) return showToast('账号 ID 不能为空', 'bad');
+        if (!payload.name) return showToast('账号名称不能为空', 'bad');
+        if (state.modalMode === 'create' && !payload.cookie) return showToast('新增账号时必须填写 Cookie', 'bad');
         try {
           const originalId = document.getElementById('accountOriginalId').value.trim();
           const isCreate = state.modalMode === 'create';
@@ -806,19 +841,19 @@ function renderAdminPage() {
           try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
           if (!res.ok) throw new Error(data?.message || ('HTTP ' + res.status));
           closeAccountModal();
-          alert(data.message || (isCreate ? '账号已创建' : '账号已更新'));
+          showToast(data.message || (isCreate ? '账号已创建' : '账号已更新'));
           await refresh();
         } catch (error) { showError(error); }
       });
-      document.getElementById('startManagerBtn').addEventListener('click', async () => { try { const res = await postJson('/admin/api/control/start'); alert(res.message || 'Manager 已启动'); await refresh(); } catch (error) { showError(error); } });
-      document.getElementById('restartManagerBtn').addEventListener('click', async () => { try { const res = await postJson('/admin/api/control/restart'); alert(res.message || 'Manager 已重启'); await refresh(); } catch (error) { showError(error); } });
-      document.getElementById('stopManagerBtn').addEventListener('click', async () => { try { const res = await postJson('/admin/api/control/stop'); alert(res.message || 'Manager 已停止'); await refresh(); } catch (error) { showError(error); } });
-      document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-action]'); if (!button) return; const action = button.dataset.action; const account = button.dataset.account; if (!account || !action) return; if (!confirm('确认对 ' + account + ' 执行 ' + action + '？')) return; try { const res = await postJson('/admin/api/accounts/' + encodeURIComponent(account) + '/' + action); alert(res.ok ? ('执行成功：' + account + ' / ' + action) : (res.message || '执行失败')); await refresh(); } catch (error) { showError(error); } });
-      document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-edit-account]'); if (!button) return; const accountId = button.dataset.editAccount; const account = state.accounts.find(item => item.id === accountId); if (!account) return alert('未找到账号 ' + accountId); openAccountModal('edit', account); });
-      document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-delete-account]'); if (!button) return; const account = button.dataset.deleteAccount; if (!account || !confirm('确认删除账号 ' + account + '？此操作会写回 accounts.json 并重载 Manager。')) return; try { const res = await fetch('/admin/api/accounts/' + encodeURIComponent(account), { method: 'DELETE' }); const text = await res.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; } if (!res.ok) throw new Error(data?.message || ('HTTP ' + res.status)); alert(data.message || '账号已删除'); await refresh(); } catch (error) { showError(error); } });
+      document.getElementById('startManagerBtn').addEventListener('click', async () => { try { const res = await postJson('/admin/api/control/start'); showToast(res.message || 'Manager 已启动'); await refresh(); } catch (error) { showError(error); } });
+      document.getElementById('restartManagerBtn').addEventListener('click', async () => { try { const res = await postJson('/admin/api/control/restart'); showToast(res.message || 'Manager 已重启'); await refresh(); } catch (error) { showError(error); } });
+      document.getElementById('stopManagerBtn').addEventListener('click', async () => { try { const res = await postJson('/admin/api/control/stop'); showToast(res.message || 'Manager 已停止'); await refresh(); } catch (error) { showError(error); } });
+      document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-action]'); if (!button) return; const action = button.dataset.action; const account = button.dataset.account; if (!account || !action) return; if (!confirm('确认对 ' + account + ' 执行 ' + action + '？')) return; try { const res = await postJson('/admin/api/accounts/' + encodeURIComponent(account) + '/' + action); showToast(res.ok ? ('执行成功：' + account + ' / ' + action) : (res.message || '执行失败'), res.ok ? 'ok' : 'bad'); await refresh(); } catch (error) { showError(error); } });
+      document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-edit-account]'); if (!button) return; const accountId = button.dataset.editAccount; const account = state.accounts.find(item => item.id === accountId); if (!account) return showToast('未找到账号 ' + accountId, 'bad'); openAccountModal('edit', account); });
+      document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-delete-account]'); if (!button) return; const account = button.dataset.deleteAccount; if (!account || !confirm('确认删除账号 ' + account + '？此操作会写回 accounts.json 并重载 Manager。')) return; try { const res = await fetch('/admin/api/accounts/' + encodeURIComponent(account), { method: 'DELETE' }); const text = await res.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; } if (!res.ok) throw new Error(data?.message || ('HTTP ' + res.status)); showToast(data.message || '账号已删除'); await refresh(); } catch (error) { showError(error); } });
       document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAccountModal(); });
     }
-    function showError(error) { console.error(error); alert(error?.message || String(error)); }
+    function showError(error) { console.error(error); showToast(error?.message || String(error), 'bad'); }
     bindTabs(); bindRefresh(); bindActions(); refresh().catch(showError);
   </script>
 </body>
