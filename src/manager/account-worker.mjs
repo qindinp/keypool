@@ -12,6 +12,13 @@
  */
 
 export class AccountWorker {
+  /** 从 MiMo API 响应推断限时沙箱的实际创建时间 */
+  static sandboxCreatedAt(apiResult) {
+    if (apiResult.createTime) return typeof apiResult.createTime === 'number' ? new Date(apiResult.createTime).toISOString() : String(apiResult.createTime);
+    if (apiResult.expireTime) return new Date(apiResult.expireTime - 3600_000).toISOString();
+    return new Date().toISOString();
+  }
+
   /**
    * @param {object} account - 账号配置 { id, name, cookie, priority }
    * @param {object} deps - 依赖注入
@@ -163,7 +170,7 @@ export class AccountWorker {
       };
 
       this.setState('READY', {
-        createdAt: new Date().toISOString(),
+        createdAt: AccountWorker.sandboxCreatedAt(result),
         destroyedAt: null,
       });
       console.log(`✅ [${this.account.id}] 实例就绪 (status=${result.status}, expires=${new Date(this.instance.expiresAt).toLocaleString()})`);
@@ -228,7 +235,7 @@ export class AccountWorker {
       };
 
       this.setState('READY', {
-        createdAt: new Date().toISOString(),
+        createdAt: AccountWorker.sandboxCreatedAt(result),
         destroyedAt: null,
       });
       console.log(`✅ [${this.account.id}] 新实例就绪 (status=${result.status})`);

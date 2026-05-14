@@ -97,6 +97,7 @@ export class Scheduler {
           if (worker.instance && status.expireTime) {
             worker.instance.expiresAt = status.expireTime;
           }
+          this.registry.updateInstanceState(worker.account.id, { createdAt: worker.constructor.sandboxCreatedAt(status) });
         } catch (err) {
           console.warn(`⚠️ [${worker.account.id}] 状态检查失败:`, err.message);
         }
@@ -150,6 +151,7 @@ export class Scheduler {
           if (worker.instance && status.expireTime) {
             worker.instance.expiresAt = status.expireTime;
           }
+          this.registry.updateInstanceState(worker.account.id, { createdAt: worker.constructor.sandboxCreatedAt(status) });
         } catch (err) {
           console.warn(`⚠️ [${worker.account.id}] 状态检查失败:`, err.message);
         }
