@@ -271,7 +271,27 @@ export function renderAdminPage() {
     function metricGroup(title, subtitle, cards) { return '<section class="metric-group"><div class="metric-group-head"><h2>' + escapeHtml(title) + '</h2><span class="metric-group-sub">' + escapeHtml(subtitle) + '</span></div><div class="metric-grid">' + cards.join('') + '</div></section>'; }
     function actionButtons(accountId) { return '<div class="action-row">' + '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">部署</button>' + '<button class="btn" data-action="recover" data-account="' + escapeHtml(accountId) + '">恢复</button>' + '<button class="btn" data-action="destroy" data-account="' + escapeHtml(accountId) + '">销毁</button>' + '</div>'; }
     async function postJson(url) { const resp = await fetch(url, { method: 'POST' }); const text = await resp.text(); let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; } if (!resp.ok) { throw new Error(data?.message || data?.error || ('HTTP ' + resp.status)); } return data; }
-    async function refresh() { const [overview, agentsRes, instancesRes, accountsRes] = await Promise.all([ fetch('/admin/api/overview', { cache: 'no-store' }).then(r => r.json()), fetch('/admin/api/agents', { cache: 'no-store' }).then(r => r.json()), fetch('/admin/api/instances', { cache: 'no-store' }).then(r => r.json()), fetch('/admin/api/accounts', { cache: 'no-store' }).then(r => r.json()) ]); const accounts = accountsRes.accounts || []; state.accounts = accounts; renderOverview(overview); renderAgents(agentsRes.agents || []); renderInstances(Object.values(instancesRes.instances || {})); renderAccounts(accounts); if (state.activeTab === 'audit') { try { await refreshAudit(); } catch {} } }
+    async function refresh() {
+      const [overviewRes, agentsRes, instancesRes, accountsRes] = await Promise.allSettled([
+        fetch('/admin/api/overview', { cache: 'no-store' }).then(r => r.json()),
+        fetch('/admin/api/agents', { cache: 'no-store' }).then(r => r.json()),
+        fetch('/admin/api/instances', { cache: 'no-store' }).then(r => r.json()),
+        fetch('/admin/api/accounts', { cache: 'no-store' }).then(r => r.json())
+      ]);
+      const overview = overviewRes.status === 'fulfilled' ? overviewRes.value : null;
+      const agentsData = agentsRes.status === 'fulfilled' ? agentsRes.value : { agents: [] };
+      const instancesData = instancesRes.status === 'fulfilled' ? instancesRes.value : { instances: {} };
+      const accountsData = accountsRes.status === 'fulfilled' ? accountsRes.value : { accounts: [] };
+      if (overview) renderOverview(overview);
+      if (agentsRes.status === 'rejected') showToast('Agents 加载失败', 'warn');
+      if (instancesRes.status === 'rejected') showToast('实例数据加载失败', 'warn');
+      if (accountsRes.status === 'rejected') showToast('账号数据加载失败', 'warn');
+      state.accounts = accountsData.accounts || [];
+      renderAgents(agentsData.agents || []);
+      renderInstances(Object.values(instancesData.instances || {}));
+      renderAccounts(state.accounts);
+      if (state.activeTab === 'audit') { try { await refreshAudit(); } catch {} }
+    }
     function renderOverview(data) {
       const serviceStatus = data?.service?.status || '-';
       const managerRunning = Boolean(data?.service?.manager?.running);
@@ -348,10 +368,10 @@ export function renderAdminPage() {
     }
 
     function showToast(msg, type = 'ok') { const c = document.getElementById('toastContainer'); const el = document.createElement('div'); el.className = 'toast ' + type; el.textContent = msg; c.appendChild(el); requestAnimationFrame(() => el.classList.add('show')); setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000); }
-    async function withLoading(btn, fn) { if (!btn || btn.disabled) return; const orig = btn.textContent; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>' + escapeHtml(orig); try { await fn(); } finally { btn.disabled = false; btn.textContent = orig; } }
+    async function withLoading(btn, fn) { if (!btn || btn.disabled) return; const orig = btn.textContent; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>' + escapeHtml(orig); try { return await fn(); } catch (error) { showError(error); throw error; } finally { btn.disabled = false; btn.textContent = orig; } }
     async function refreshAudit() { const res = await fetch('/admin/api/audit?limit=100', { cache: 'no-store' }); const data = await res.json(); renderAudit(data.entries || []); }
     function bindActions() {
-      document.getElementById('copyBtn').addEventListener('click', async () => { const btn = document.getElementById('copyBtn'); await withLoading(btn, async () => { const text = document.getElementById('accessUrl').textContent || ''; await navigator.clipboard.writeText(text); showToast('已复制接入地址'); }); });
+      document.getElementById('copyBtn').addEventListener('click', async () => { const btn = document.getElementById('copyBtn'); await withLoading(btn, async () => { try { const text = document.getElementById('accessUrl').textContent || ''; await navigator.clipboard.writeText(text); showToast('已复制接入地址'); } catch (error) { showError(error); } }); });
       document.getElementById('newAccountBtn').addEventListener('click', () => openAccountModal('create', { enabled: true, priority: 100, weight: 100, tags: [] }));
       document.getElementById('cancelAccountBtn').addEventListener('click', () => closeAccountModal());
       document.getElementById('accountModalBackdrop').addEventListener('click', (event) => { if (event.target.id === 'accountModalBackdrop') closeAccountModal(); });
