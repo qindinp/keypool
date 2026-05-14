@@ -87,6 +87,8 @@ export class AccountWorker {
   async deployCurrentInstance() {
     if (!this.deployer) return null;
 
+    const prevRegistryState = this.registry.getInstanceState(this.account.id) || {};
+    const prevDeployCount = Number(prevRegistryState.deployCount) || 0;
     this.setState('DEPLOYING', {
       deployMode: 'tunnel',
       verified: false,
@@ -96,6 +98,7 @@ export class AccountWorker {
       deployTimeline: [],
       confirmationSource: null,
       responseText: null,
+      deployCount: prevDeployCount + 1,
     });
 
     const result = await this.deployer.deploy(this.account);
@@ -159,7 +162,10 @@ export class AccountWorker {
         createdAt: Date.now(),
       };
 
-      this.setState('READY');
+      this.setState('READY', {
+        createdAt: new Date().toISOString(),
+        destroyedAt: null,
+      });
       console.log(`✅ [${this.account.id}] 实例就绪 (status=${result.status}, expires=${new Date(this.instance.expiresAt).toLocaleString()})`);
 
       if (this.deployer) {
@@ -221,7 +227,10 @@ export class AccountWorker {
         createdAt: Date.now(),
       };
 
-      this.setState('READY');
+      this.setState('READY', {
+        createdAt: new Date().toISOString(),
+        destroyedAt: null,
+      });
       console.log(`✅ [${this.account.id}] 新实例就绪 (status=${result.status})`);
 
       if (this.deployer) {
@@ -296,6 +305,7 @@ export class AccountWorker {
       retryable: false,
       failureType: 'manual_stop',
       lastManualStopAt: new Date().toISOString(),
+      destroyedAt: new Date().toISOString(),
       lastDeployError: null,
       deployStage: null,
       deployStatus: null,

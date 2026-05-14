@@ -95,7 +95,7 @@ export async function runAccountAction(manager, accountId, action) {
       await worker.api.destroyInstance(worker.account.cookie);
       worker.instance = null;
       worker.state = 'DESTROYED';
-      worker.registry.setInstanceStatus(worker.account.id, 'DESTROYED');
+      worker.registry.updateInstanceState(worker.account.id, { status: 'DESTROYED', destroyedAt: new Date().toISOString() });
     } else if (action === 'stop') {
       await worker.manualStop();
     }

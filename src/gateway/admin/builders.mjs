@@ -96,6 +96,8 @@ export function buildInstances(registry) {
       proxyUrl: state?.proxyUrl || null,
       agentOnline: !!state?.agentOnline,
       deployCount: state?.deployCount || 0,
+      createdAt: state?.createdAt || null,
+      destroyedAt: state?.destroyedAt || null,
     };
   }
   return result;
