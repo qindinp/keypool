@@ -1,7 +1,7 @@
 /**
  * Admin 路由分发
- * - 挂载所有 /admin/* 和 /health 路由
- * - 统一 JSON 响应格式
+ * - 声明式路由表替代 18 个 if 分支
+ * - 统一 JSON 响应格式 + 错误处理
  */
 
 import { auditLog } from './audit.mjs';
@@ -24,6 +24,17 @@ import {
 } from './builders.mjs';
 import { renderAdminPage } from './frontend.mjs';
 
+/** JSON 响应 */
+function json(res, data, status = 200) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(data, null, 2));
+}
+
+/** Action result → JSON（ok ? 200 : 400） */
+function jsonResult(res, result) {
+  json(res, result, result.ok ? 200 : 400);
+}
+
 /**
  * 创建 Admin API 处理器
  * @param {import('../registry.mjs').Registry} registry
@@ -32,127 +43,121 @@ import { renderAdminPage } from './frontend.mjs';
  * @returns {Function}
  */
 export function createAdminHandler(registry, context = {}) {
-  return async function handleAdmin(req, res) {
-    const url = new URL(req.url, `http://${req.headers.host}`);
+  const mgr = () => context.manager;
 
-    if (url.pathname === '/admin' || url.pathname === '/admin/') {
+  // ── 声明式路由表 ──
+  // path: 精确路径匹配（string）
+  // pattern: 正则匹配（RegExp），捕获组作为 params 传入 handler
+  // method: 省略 = 任意方法，string = 精确匹配，array = 其中之一
+  // handler: (req, res, url, params[]) => void | Promise<void>
+  const routes = [
+    // ── HTML 页面 ──
+    { path: '/admin', handler: (req, res) => {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(renderAdminPage());
-      return;
-    }
+    }},
+    { path: '/admin/', handler: (req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(renderAdminPage());
+    }},
 
-    if (url.pathname === '/admin/api/overview') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(buildOverview(registry, req, context), null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/control/status') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok: true, manager: buildManagerStatus(context.manager) }, null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/control/start' && req.method === 'POST') {
-      const result = await startManager(context.manager);
-      res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/control/stop' && req.method === 'POST') {
-      const result = await stopManager(context.manager);
-      res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/control/restart' && req.method === 'POST') {
-      const result = await restartManager(context.manager);
-      res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/accounts' && req.method === 'POST') {
-      const result = await createAccount(context.manager, req);
-      res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    const cookieMatch = url.pathname.match(/^\/admin\/api\/accounts\/([^/]+)\/cookie$/);
-    if (cookieMatch && req.method === 'POST') {
-      const [, accountId] = cookieMatch;
-      const result = await updateAccountCookie(context.manager, accountId, req);
-      res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    const accountManageMatch = url.pathname.match(/^\/admin\/api\/accounts\/([^/]+)$/);
-    if (accountManageMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
-      const [, accountId] = accountManageMatch;
-      const result = req.method === 'PUT'
-        ? await updateAccount(context.manager, accountId, req)
-        : await deleteAccount(context.manager, accountId);
-      res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    const actionMatch = url.pathname.match(/^\/admin\/api\/accounts\/([^/]+)\/(deploy|recover|destroy|stop)$/);
-    if (actionMatch && req.method === 'POST') {
-      const [, accountId, action] = actionMatch;
-      const result = await runAccountAction(context.manager, accountId, action);
-      res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result, null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/agents') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ agents: buildAgents(registry) }, null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/instances') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ instances: buildInstances(registry) }, null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/accounts') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(loadAccountsSummary(), null, 2));
-      return;
-    }
-
-    if (url.pathname === '/admin/api/audit') {
+    // ── GET：概览 / 状态 / 列表 ──
+    { path: '/admin/api/overview', handler: (req, res, url) =>
+      json(res, buildOverview(registry, req, context)) },
+    { path: '/admin/api/control/status', handler: (req, res) =>
+      json(res, { ok: true, manager: buildManagerStatus(mgr()) }) },
+    { path: '/admin/api/agents', handler: (req, res) =>
+      json(res, { agents: buildAgents(registry) }) },
+    { path: '/admin/api/instances', handler: (req, res) =>
+      json(res, { instances: buildInstances(registry) }) },
+    { path: '/admin/api/accounts', method: 'GET', handler: (req, res) =>
+      json(res, loadAccountsSummary()) },
+    { path: '/admin/api/audit', handler: (req, res, url) => {
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ entries: auditLog.slice(-limit).reverse() }, null, 2));
-      return;
-    }
+      json(res, { entries: auditLog.slice(-limit).reverse() });
+    }},
 
-    if (url.pathname === '/health') {
+    // ── Health ──
+    { path: '/health', handler: (req, res) => {
       const healthyAgents = registry.getHealthy();
       const instanceStates = [...registry.getAllInstances().values()];
-      const verifiedInstances = instanceStates.filter(state => state?.verified || state?.status === 'ACTIVE');
-      const deployingInstances = instanceStates.filter(state => ['DEPLOYING', 'DEPLOYED_UNVERIFIED', 'READY', 'RECOVERING'].includes(state?.status));
-      const failedInstances = instanceStates.filter(state => state?.status === 'FAILED');
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({
+      const verifiedInstances = instanceStates.filter(s => s?.verified || s?.status === 'ACTIVE');
+      const deployingInstances = instanceStates.filter(s => ['DEPLOYING', 'DEPLOYED_UNVERIFIED', 'READY', 'RECOVERING'].includes(s?.status));
+      const failedInstances = instanceStates.filter(s => s?.status === 'FAILED');
+      json(res, {
         status: verifiedInstances.length > 0 || healthyAgents.length > 0 ? 'ok' : 'degraded',
         agents: healthyAgents.length,
         verifiedInstances: verifiedInstances.length,
         deployingInstances: deployingInstances.length,
         failedInstances: failedInstances.length,
-      }));
+      });
+    }},
+
+    // ── POST：Manager 控制 ──
+    { path: '/admin/api/control/start', method: 'POST',
+      handler: async (req, res) => jsonResult(res, await startManager(mgr())) },
+    { path: '/admin/api/control/stop', method: 'POST',
+      handler: async (req, res) => jsonResult(res, await stopManager(mgr())) },
+    { path: '/admin/api/control/restart', method: 'POST',
+      handler: async (req, res) => jsonResult(res, await restartManager(mgr())) },
+
+    // ── POST：账号创建 ──
+    { path: '/admin/api/accounts', method: 'POST',
+      handler: async (req, res) => jsonResult(res, await createAccount(mgr(), req)) },
+
+    // ── 参数化路由（正则） ──
+    // cookie 更新
+    { pattern: /^\/admin\/api\/accounts\/([^/]+)\/cookie$/, method: 'POST',
+      handler: async (req, res, url, [accountId]) =>
+        jsonResult(res, await updateAccountCookie(mgr(), accountId, req)) },
+    // 实例操作（deploy / recover / destroy / stop）
+    { pattern: /^\/admin\/api\/accounts\/([^/]+)\/(deploy|recover|destroy|stop)$/, method: 'POST',
+      handler: async (req, res, url, [accountId, action]) =>
+        jsonResult(res, await runAccountAction(mgr(), accountId, action)) },
+    // 账号更新
+    { pattern: /^\/admin\/api\/accounts\/([^/]+)$/, method: 'PUT',
+      handler: async (req, res, url, [accountId]) =>
+        jsonResult(res, await updateAccount(mgr(), accountId, req)) },
+    // 账号删除
+    { pattern: /^\/admin\/api\/accounts\/([^/]+)$/, method: 'DELETE',
+      handler: async (req, res, url, [accountId]) =>
+        jsonResult(res, await deleteAccount(mgr(), accountId)) },
+  ];
+
+  return async function handleAdmin(req, res) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const pathname = url.pathname;
+    const method = req.method;
+
+    for (const route of routes) {
+      // 匹配路径
+      let params = null;
+      if (route.path) {
+        if (pathname !== route.path) continue;
+      } else if (route.pattern) {
+        const match = pathname.match(route.pattern);
+        if (!match) continue;
+        params = match.slice(1);
+      }
+
+      // 匹配方法
+      if (route.method) {
+        const ok = Array.isArray(route.method) ? route.method.includes(method) : method === route.method;
+        if (!ok) continue;
+      }
+
+      // 执行
+      try {
+        await route.handler(req, res, url, params || []);
+      } catch (error) {
+        if (!res.headersSent) {
+          json(res, { error: 'internal_error', message: error?.message || String(error) }, 500);
+        }
+      }
       return;
     }
 
-    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'Not found' }));
+    // 404 兜底
+    json(res, { error: 'Not found' }, 404);
   };
 }
