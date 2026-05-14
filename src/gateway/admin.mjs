@@ -9,6 +9,20 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = resolve(__dirname, '..', '..');
 const accountsPath = resolve(workspaceRoot, 'accounts.json');
+const auditPath = resolve(workspaceRoot, '.keypool-audit.json');
+const AUDIT_MAX = 200;
+
+let auditLog = [];
+try {
+  if (existsSync(auditPath)) auditLog = JSON.parse(readFileSync(auditPath, 'utf-8')).slice(-AUDIT_MAX);
+} catch { auditLog = []; }
+
+function logAudit(action, target, detail, ok) {
+  const entry = { at: new Date().toISOString(), action, target, detail: String(detail || ''), ok: !!ok };
+  auditLog.push(entry);
+  if (auditLog.length > AUDIT_MAX) auditLog = auditLog.slice(-AUDIT_MAX);
+  try { writeFileSync(auditPath, JSON.stringify(auditLog, null, 2), 'utf-8'); } catch {}
+}
 
 /**
  * 创建 Admin API 处理器
@@ -114,6 +128,13 @@ export function createAdminHandler(registry, context = {}) {
       return;
     }
 
+    if (url.pathname === '/admin/api/audit') {
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ entries: auditLog.slice(-limit).reverse() }, null, 2));
+      return;
+    }
+
     if (url.pathname === '/health') {
       const healthyAgents = registry.getHealthy();
       const instanceStates = [...registry.getAllInstances().values()];
@@ -160,28 +181,34 @@ function sanitizeManagerConfig(config) {
 
 async function startManager(manager) {
   if (!manager) {
+    logAudit('manager.start', '-', 'Manager 未挂载', false);
     return { ok: false, error: 'manager_unavailable', message: 'Manager 未挂载到 Gateway' };
   }
   try {
     manager.start();
+    logAudit('manager.start', '-', 'ok', true);
     return { ok: true, message: 'Manager 已启动', manager: buildManagerStatus(manager) };
   } catch (error) {
+    logAudit('manager.start', '-', error?.message || String(error), false);
     return { ok: false, error: 'manager_start_failed', message: error?.message || String(error) };
   }
 }
 
 async function stopManager(manager) {
   if (!manager) {
+    logAudit('manager.stop', '-', 'Manager 未挂载', false);
     return { ok: false, error: 'manager_unavailable', message: 'Manager 未挂载到 Gateway' };
   }
   try {
     await manager.stop();
+    logAudit('manager.stop', '-', 'ok', true);
     return {
       ok: true,
       message: 'Manager 已停止',
       manager: { running: false, workers: Array.isArray(manager.workers) ? manager.workers.length : 0 },
     };
   } catch (error) {
+    logAudit('manager.stop', '-', error?.message || String(error), false);
     return { ok: false, error: 'manager_stop_failed', message: error?.message || String(error) };
   }
 }
@@ -219,6 +246,7 @@ async function runAccountAction(manager, accountId, action) {
       await worker.manualStop();
     }
 
+    logAudit(`account.${action}`, accountId, 'ok', true);
     return {
       ok: true,
       action,
@@ -226,6 +254,7 @@ async function runAccountAction(manager, accountId, action) {
       state: worker.snapshot(),
     };
   } catch (error) {
+    logAudit(`account.${action}`, accountId, error?.message || String(error), false);
     return {
       ok: false,
       error: 'account_action_failed',
@@ -271,7 +300,7 @@ async function updateAccountCookie(manager, accountId, req) {
       list,
       restartManagerAfterSave: false,
     };
-  });
+  }, undefined, 'account.cookie', accountId);
 }
 
 async function createAccount(manager, req) {
@@ -308,7 +337,7 @@ async function createAccount(manager, req) {
       list,
       restartManagerAfterSave: true,
     };
-  }, manager);
+  }, manager, 'account.create', id);
 }
 
 async function updateAccount(manager, accountId, req) {
@@ -356,7 +385,7 @@ async function updateAccount(manager, accountId, req) {
       list,
       restartManagerAfterSave: true,
     };
-  }, manager);
+  }, manager, 'account.update', accountId);
 }
 
 async function deleteAccount(manager, accountId) {
@@ -375,10 +404,10 @@ async function deleteAccount(manager, accountId) {
       list,
       restartManagerAfterSave: true,
     };
-  }, manager);
+  }, manager, 'account.delete', accountId);
 }
 
-async function mutateAccountsConfig(mutator, manager) {
+async function mutateAccountsConfig(mutator, manager, auditAction, auditTarget) {
   if (!existsSync(accountsPath)) {
     return { ok: false, error: 'accounts_missing', message: 'accounts.json 不存在，无法在界面中管理账号' };
   }
@@ -391,7 +420,10 @@ async function mutateAccountsConfig(mutator, manager) {
     }
 
     const result = await mutator({ raw, list });
-    if (!result?.ok) return result;
+    if (!result?.ok) {
+      if (auditAction) logAudit(auditAction, auditTarget || '-', result.message || 'failed', false);
+      return result;
+    }
 
     writeFileSync(accountsPath, JSON.stringify(Array.isArray(raw) ? list : { ...raw, accounts: list }, null, 2), 'utf-8');
 
@@ -407,8 +439,10 @@ async function mutateAccountsConfig(mutator, manager) {
     }
 
     const { raw: _raw, list: _list, ...sanitized } = result;
+    if (auditAction) logAudit(auditAction, auditTarget || '-', sanitized.message || 'ok', true);
     return sanitized;
   } catch (error) {
+    if (auditAction) logAudit(auditAction, auditTarget || '-', error?.message || String(error), false);
     return {
       ok: false,
       error: 'accounts_mutation_failed',
@@ -680,6 +714,7 @@ function renderAdminPage() {
           <a href="/admin/api/agents" target="_blank">/admin/api/agents</a>
           <a href="/admin/api/instances" target="_blank">/admin/api/instances</a>
           <a href="/admin/api/accounts" target="_blank">/admin/api/accounts</a>
+          <a href="/admin/api/audit" target="_blank">/admin/api/audit</a>
           <a href="/admin/api/control/status" target="_blank">/admin/api/control/status</a>
         </div>
       </div>
@@ -697,6 +732,7 @@ function renderAdminPage() {
       <div class="tab active" data-tab="agents">Agents</div>
       <div class="tab" data-tab="instances">实例</div>
       <div class="tab" data-tab="accounts">账号</div>
+      <div class="tab" data-tab="audit">审计</div>
     </div>
 
     <div class="panel active" data-panel="agents"><div class="grid" id="agentsGrid"></div></div>
@@ -709,6 +745,17 @@ function renderAdminPage() {
         <table>
           <thead><tr><th>ID</th><th>名称</th><th>启用</th><th>优先级</th><th>Weight</th><th>标签</th><th>Cookie</th><th>操作</th></tr></thead>
           <tbody id="accountsBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel" data-panel="audit">
+      <div class="table-wrap">
+        <div class="toolbar">
+          <button class="btn" id="refreshAuditBtn">刷新审计日志</button>
+        </div>
+        <table>
+          <thead><tr><th>时间</th><th>操作</th><th>目标</th><th>详情</th><th>结果</th></tr></thead>
+          <tbody id="auditBody"></tbody>
         </table>
       </div>
     </div>
@@ -771,12 +818,13 @@ function renderAdminPage() {
     function metricCard(label, value, cls = '') { return '<div class="metric"><div class="label">' + escapeHtml(label) + '</div><div class="value ' + cls + '">' + escapeHtml(value) + '</div></div>'; }
     function actionButtons(accountId) { return '<div class="action-row">' + '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">部署</button>' + '<button class="btn" data-action="recover" data-account="' + escapeHtml(accountId) + '">恢复</button>' + '<button class="btn" data-action="destroy" data-account="' + escapeHtml(accountId) + '">销毁</button>' + '</div>'; }
     async function postJson(url) { const resp = await fetch(url, { method: 'POST' }); const text = await resp.text(); let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; } if (!resp.ok) { throw new Error(data?.message || data?.error || ('HTTP ' + resp.status)); } return data; }
-    async function refresh() { const [overview, agentsRes, instancesRes, accountsRes] = await Promise.all([ fetch('/admin/api/overview').then(r => r.json()), fetch('/admin/api/agents').then(r => r.json()), fetch('/admin/api/instances').then(r => r.json()), fetch('/admin/api/accounts').then(r => r.json()) ]); const accounts = accountsRes.accounts || []; state.accounts = accounts; renderOverview(overview); renderAgents(agentsRes.agents || []); renderInstances(Object.values(instancesRes.instances || {})); renderAccounts(accounts); }
+    async function refresh() { const [overview, agentsRes, instancesRes, accountsRes, auditRes] = await Promise.all([ fetch('/admin/api/overview').then(r => r.json()), fetch('/admin/api/agents').then(r => r.json()), fetch('/admin/api/instances').then(r => r.json()), fetch('/admin/api/accounts').then(r => r.json()), fetch('/admin/api/audit?limit=50').then(r => r.json()).catch(() => ({ entries: [] })) ]); const accounts = accountsRes.accounts || []; state.accounts = accounts; renderOverview(overview); renderAgents(agentsRes.agents || []); renderInstances(Object.values(instancesRes.instances || {})); renderAccounts(accounts); renderAudit(auditRes.entries || []); }
     function renderOverview(data) { document.getElementById('accessUrl').textContent = data?.service?.accessUrl || '-'; document.getElementById('metrics').innerHTML = [ metricCard('服务状态', data?.service?.status || '-'), metricCard('Manager', data?.service?.manager?.running ? '运行中' : '未运行', data?.service?.manager?.running ? 'ok' : 'warn'), metricCard('Agents', data?.metrics?.agents ?? 0), metricCard('Healthy', data?.metrics?.healthyAgents ?? 0, 'ok'), metricCard('Inflight', data?.metrics?.inflight ?? 0), metricCard('实例', data?.metrics?.instances ?? 0), metricCard('已验证', data?.metrics?.verifiedInstances ?? 0, 'ok'), metricCard('可重试失败', data?.metrics?.retryableFailures ?? 0, 'warn'), metricCard('History确认', data?.metrics?.historyConfirmedStages ?? 0, 'warn'), metricCard('异常', data?.metrics?.failedInstances ?? 0, 'bad') ].join(''); }
     function renderAgents(agents) { const root = document.getElementById('agentsGrid'); if (!agents.length) { root.innerHTML = '<div class="card empty">当前没有 Agent 连接到 Gateway</div>'; return; } root.innerHTML = agents.map(agent => { const health = agent.healthy ? '<span class="pill ok">健康</span>' : '<span class="pill bad">异常</span>'; return '<div class="card">' + '<h3>' + escapeHtml(agent.agentId) + '</h3>' + '<div class="sub">account=' + escapeHtml(agent.accountId) + ' · instance=' + escapeHtml(agent.instanceId || '-') + '</div>' + '<div style="margin-top:8px">' + health + '</div>' + '<div class="kv">' + '<div class="k">模型</div><div class="v mono">' + escapeHtml((agent.models || []).join(', ') || '-') + '</div>' + '<div class="k">连接时长</div><div class="v">' + escapeHtml(fmtAgo(agent.connectedAgoMs)) + '</div>' + '<div class="k">Inflight</div><div class="v">' + escapeHtml(agent.inflight) + '</div>' + '<div class="k">成功/失败</div><div class="v">' + escapeHtml(agent.successCount + ' / ' + agent.failureCount) + '</div>' + '<div class="k">平均延迟</div><div class="v">' + escapeHtml(agent.avgLatency + 'ms') + '</div>' + '</div></div>'; }).join(''); }
     function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => { const id = 'inst-' + escapeHtml(item.accountId); return '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">绑定 Agent</div><div class="v mono">' + escapeHtml(item.agentId || '-') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(item.lastDeployAt || '-') + '</div>' + '</div>' + '<span class="card-toggle" onclick="toggleCard(\'' + id + '\')">展开详情 ▾</span>' + '<div class="card-extra" id="' + id + '">' + '<div class="kv">' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">Proxy URL</div><div class="v mono">' + escapeHtml(item.proxyUrl || '-') + '</div>' + '<div class="k">Tailnet IP</div><div class="v mono">' + escapeHtml(item.currentTailnetIpUrl || '-') + '</div>' + '<div class="k">Tailnet 域名</div><div class="v mono">' + escapeHtml(item.currentTailnetUrl || '-') + '</div>' + '<div class="k">Share URL</div><div class="v mono">' + escapeHtml(item.currentShareUrl || '-') + '</div>' + '<div class="k">Local URL</div><div class="v mono">' + escapeHtml(item.currentLocalUrl || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(item.lastVerifiedAt || '-') + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + '</div>' + actionButtons(item.accountId) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>'; }).join(''); }
     function toggleCard(id) { const el = document.getElementById(id); if (!el) return; el.classList.toggle('expanded'); const toggle = el.previousElementSibling; if (toggle) toggle.textContent = el.classList.contains('expanded') ? '收起 ▴' : '展开详情 ▾'; }
     function renderAccounts(accounts) { const body = document.getElementById('accountsBody'); if (!accounts.length) { body.innerHTML = '<tr><td colspan="8" class="empty">未找到账号配置</td></tr>'; return; } body.innerHTML = accounts.map(item => '<tr>' + '<td class="mono">' + escapeHtml(item.id) + '</td>' + '<td>' + escapeHtml(item.name) + '</td>' + '<td>' + escapeHtml(item.enabled ? '是' : '否') + '</td>' + '<td>' + escapeHtml(item.priority) + '</td>' + '<td>' + escapeHtml(item.weight ?? 100) + '</td>' + '<td>' + escapeHtml((item.tags || []).join(', ') || '-') + '</td>' + '<td>' + escapeHtml(item.hasCookie ? '已配置' : (item.hasCookieFile ? 'cookieFile' : '缺失')) + '</td>' + '<td><div class="action-row"><button class="btn" data-edit-account="' + escapeHtml(item.id) + '">编辑</button><button class="btn" data-delete-account="' + escapeHtml(item.id) + '">删除</button></div></td>' + '</tr>').join(''); }
+    function renderAudit(entries) { const body = document.getElementById('auditBody'); if (!body) return; if (!entries.length) { body.innerHTML = '<tr><td colspan="5" class="empty">暂无审计记录</td></tr>'; return; } body.innerHTML = entries.map(e => '<tr>' + '<td class="mono" style="font-size:12px">' + escapeHtml(e.at) + '</td>' + '<td>' + escapeHtml(e.action) + '</td>' + '<td class="mono">' + escapeHtml(e.target) + '</td>' + '<td>' + escapeHtml(e.detail) + '</td>' + '<td>' + (e.ok ? '<span class="pill ok">成功</span>' : '<span class="pill bad">失败</span>') + '</td>' + '</tr>').join(''); }
     function bindTabs() { document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.tab').forEach(t => t.classList.remove('active')); document.querySelectorAll('.panel').forEach(p => p.classList.remove('active')); tab.classList.add('active'); document.querySelector('[data-panel="' + tab.dataset.tab + '"]').classList.add('active'); })); }
     function bindRefresh() { const select = document.getElementById('refreshMs'); const applyTimer = () => { if (state.timer) clearInterval(state.timer); const ms = Number(select.value || 0); if (ms > 0) state.timer = setInterval(() => refresh().catch(showError), ms); }; select.addEventListener('change', applyTimer); applyTimer(); document.getElementById('refreshBtn').addEventListener('click', () => refresh().catch(showError)); }
     function openAccountModal(mode, initial = {}) {
@@ -851,6 +899,7 @@ function renderAdminPage() {
       document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-action]'); if (!button) return; const action = button.dataset.action; const account = button.dataset.account; if (!account || !action) return; if (!confirm('确认对 ' + account + ' 执行 ' + action + '？')) return; try { const res = await postJson('/admin/api/accounts/' + encodeURIComponent(account) + '/' + action); showToast(res.ok ? ('执行成功：' + account + ' / ' + action) : (res.message || '执行失败'), res.ok ? 'ok' : 'bad'); await refresh(); } catch (error) { showError(error); } });
       document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-edit-account]'); if (!button) return; const accountId = button.dataset.editAccount; const account = state.accounts.find(item => item.id === accountId); if (!account) return showToast('未找到账号 ' + accountId, 'bad'); openAccountModal('edit', account); });
       document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-delete-account]'); if (!button) return; const account = button.dataset.deleteAccount; if (!account || !confirm('确认删除账号 ' + account + '？此操作会写回 accounts.json 并重载 Manager。')) return; try { const res = await fetch('/admin/api/accounts/' + encodeURIComponent(account), { method: 'DELETE' }); const text = await res.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; } if (!res.ok) throw new Error(data?.message || ('HTTP ' + res.status)); showToast(data.message || '账号已删除'); await refresh(); } catch (error) { showError(error); } });
+      document.getElementById('refreshAuditBtn').addEventListener('click', async () => { try { const res = await fetch('/admin/api/audit?limit=100'); const data = await res.json(); renderAudit(data.entries || []); showToast('审计日志已刷新'); } catch (error) { showError(error); } });
       document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAccountModal(); });
     }
     function showError(error) { console.error(error); showToast(error?.message || String(error), 'bad'); }

@@ -11,3 +11,4 @@ config.json
 config.json
 .manager/
 accounts.json
+.keypool-audit.json
