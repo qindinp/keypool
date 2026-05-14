@@ -78,3 +78,59 @@ test('AccountWorker.manualStop() handles already-destroyed instance gracefully',
   assert.equal(worker.state, 'MANUAL_STOPPED');
   assert.equal(worker.instance, null);
 });
+
+test('AccountWorker adopts already registered tunnel when deployer reports marker failure', async () => {
+  const { AccountWorker } = await import('../src/manager/account-worker.mjs');
+
+  const state = new Map();
+  const account = { id: 'account-3', cookie: 'cookie3' };
+  const registry = {
+    setInstanceStatus(accountId, status) {
+      const current = state.get(accountId) || {};
+      state.set(accountId, { ...current, status });
+    },
+    updateInstanceState(accountId, patch) {
+      const current = state.get(accountId) || {};
+      state.set(accountId, { ...current, ...patch });
+    },
+    getInstanceState(accountId) {
+      return state.get(accountId) || {};
+    },
+  };
+  const api = {
+    createInstance: async () => ({ status: 'AVAILABLE', expireTime: Date.now() + 3600_000 }),
+    destroyInstance: async () => {},
+  };
+  const deployer = {
+    async deploy() {
+      registry.updateInstanceState(account.id, {
+        tunnel: { readyState: 1 },
+        tunnelAccountId: account.id,
+        tunnelRunId: 'account-3-run',
+        tunnelConnectedAt: new Date().toISOString(),
+        verified: true,
+        healthOk: true,
+      });
+      const err = new Error('chat marker timeout');
+      err.deployResult = {
+        deployMode: 'tunnel',
+        runId: 'account-3-run',
+        stage: 'start',
+        stageStatus: 'timeout',
+        timeline: [{ stage: 'start', status: 'timeout' }],
+      };
+      throw err;
+    },
+  };
+
+  const worker = new AccountWorker(account, { registry, api, deployer, config: { retryBaseDelay: 1 } });
+  await worker.create();
+
+  const finalState = registry.getInstanceState(account.id);
+  assert.equal(worker.state, 'ACTIVE');
+  assert.equal(finalState.status, 'ACTIVE');
+  assert.equal(finalState.verified, true);
+  assert.equal(finalState.healthOk, true);
+  assert.equal(finalState.tunnelRunId, 'account-3-run');
+  assert.equal(finalState.lastDeployError, null);
+});

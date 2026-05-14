@@ -59,6 +59,31 @@ export class AccountWorker {
     }
   }
 
+  adoptActiveTunnel(extra = {}) {
+    const currentState = this.registry.getInstanceState(this.account.id) || {};
+    if (!currentState.tunnel) return false;
+
+    this.setState('ACTIVE', {
+      ...extra,
+      verified: true,
+      healthOk: true,
+      lastVerifiedAt: currentState.lastVerifiedAt || new Date().toISOString(),
+      tunnel: currentState.tunnel,
+      tunnelAccountId: currentState.tunnelAccountId || this.account.id,
+      tunnelRunId: currentState.tunnelRunId || extra.runId || null,
+      tunnelConnectedAt: currentState.tunnelConnectedAt || new Date().toISOString(),
+      deployMode: extra.deployMode || currentState.deployMode || 'tunnel',
+      deployStage: extra.deployStage || 'tunnel-adopted',
+      deployStatus: 'ok',
+      lastDeployError: null,
+      failureType: null,
+      retryable: true,
+      confirmationSource: extra.confirmationSource || 'tunnel-registration',
+    });
+    console.log(`✅ [${this.account.id}] 采用已注册 tunnel，标记为 ACTIVE (${currentState.tunnelRunId || 'unknown-run'})`);
+    return true;
+  }
+
   async deployCurrentInstance() {
     if (!this.deployer) return null;
 
@@ -141,8 +166,16 @@ export class AccountWorker {
         try {
           await this.deployCurrentInstance();
         } catch (err) {
-          console.error(`❌ [${this.account.id}] 部署失败:`, err.message);
           const deployResult = err?.deployResult || {};
+          const adopted = this.adoptActiveTunnel({
+            deployMode: deployResult.deployMode || 'tunnel',
+            runId: deployResult.runId || null,
+            deployTimeline: Array.isArray(deployResult.timeline) ? deployResult.timeline : [],
+            responseText: deployResult.responseText || null,
+          });
+          if (adopted) return;
+
+          console.error(`❌ [${this.account.id}] 部署失败:`, err.message);
           this.setState('FAILED', {
             verified: false,
             healthOk: false,
@@ -195,8 +228,16 @@ export class AccountWorker {
         try {
           await this.deployCurrentInstance();
         } catch (err) {
-          console.error(`❌ [${this.account.id}] 新实例部署失败:`, err.message);
           const deployResult = err?.deployResult || {};
+          const adopted = this.adoptActiveTunnel({
+            deployMode: deployResult.deployMode || 'tunnel',
+            runId: deployResult.runId || null,
+            deployTimeline: Array.isArray(deployResult.timeline) ? deployResult.timeline : [],
+            responseText: deployResult.responseText || null,
+          });
+          if (adopted) return;
+
+          console.error(`❌ [${this.account.id}] 新实例部署失败:`, err.message);
           this.instance = oldInstance;
           this.setState(oldState || 'ACTIVE', {
             lastDeployError: deployResult.lastError || err.message,

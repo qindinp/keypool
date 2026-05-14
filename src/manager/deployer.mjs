@@ -97,6 +97,38 @@ function classifyDeployError(err) {
   return { message, failureType, timedOut, refused, disconnected, unavailable, retryable: !refused };
 }
 
+function getUsableTunnelState(registry, accountId, runId = null) {
+  if (!registry || typeof registry.getInstanceState !== 'function') return null;
+  const state = registry.getInstanceState(accountId);
+  if (!state?.tunnel || state.verified === false || state.healthOk === false) return null;
+  if (runId && state.tunnelRunId && state.tunnelRunId !== runId) return null;
+  return state;
+}
+
+function markTunnelAdoptedResult(result, tunnelState, stage, accountId) {
+  result.ok = true;
+  result.created = true;
+  result.started = true;
+  result.verified = true;
+  result.healthOk = true;
+  result.failureType = null;
+  result.lastError = null;
+  result.retryable = true;
+  result.stage = stage;
+  result.stageStatus = 'ok';
+  result.confirmationSource = 'tunnel-registration';
+  result.timeline.push({
+    at: new Date().toISOString(),
+    stage,
+    status: 'ok',
+    confirmationSource: 'tunnel-registration',
+    tunnelRunId: tunnelState?.tunnelRunId || null,
+    tunnelConnectedAt: tunnelState?.tunnelConnectedAt || null,
+    note: `Adopted already registered tunnel for ${accountId}`,
+  });
+  return result;
+}
+
 /**
  * 读取 skill 文件并替换模板变量
  */
@@ -495,6 +527,12 @@ export function createDeployer(config) {
         });
 
         if (!installStage.ok) {
+          const tunnelState = getUsableTunnelState(config.registry, account.id);
+          if (tunnelState) {
+            log('ok', `检测到 Gateway 已有可用 tunnel 注册，忽略 install marker 失败并采用该连接 (runId=${tunnelState.tunnelRunId || '-'})`);
+            return markTunnelAdoptedResult(result, tunnelState, 'install', account.id);
+          }
+
           markStage('install', installStage.status, {
             retryable: installStage.retryable, failureType: installStage.failureType,
             lastError: installStage.message, confirmationSource: installStage.confirmationSource,
@@ -524,6 +562,12 @@ export function createDeployer(config) {
         });
 
         if (!startStage.ok) {
+          const tunnelState = getUsableTunnelState(config.registry, account.id, markers.runId) || getUsableTunnelState(config.registry, account.id);
+          if (tunnelState) {
+            log('ok', `检测到 Gateway 已有可用 tunnel 注册，忽略 start marker 失败并采用该连接 (runId=${tunnelState.tunnelRunId || '-'})`);
+            return markTunnelAdoptedResult(result, tunnelState, 'start', account.id);
+          }
+
           markStage('start', startStage.status, {
             retryable: startStage.retryable, failureType: startStage.failureType,
             lastError: startStage.message, confirmationSource: startStage.confirmationSource,
