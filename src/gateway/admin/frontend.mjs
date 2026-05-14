@@ -12,39 +12,64 @@ export function renderAdminPage() {
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b1020;
-      --panel: #151c2f;
-      --panel2: #1b2540;
+      --bg: #070b14;
+      --bg2: #0c1426;
+      --panel: #121a2b;
+      --panel2: #18233a;
+      --panel3: #202d49;
       --border: #2d3859;
-      --text: #e9eefb;
-      --muted: #92a0c4;
+      --border-strong: #3f5384;
+      --text: #edf4ff;
+      --muted: #97a6c9;
+      --soft: #c5d1ea;
       --accent: #66a3ff;
+      --accent2: #7dd3fc;
       --ok: #34d399;
       --warn: #fbbf24;
       --bad: #f87171;
+      --shadow: 0 18px 60px rgba(0, 0, 0, .32);
     }
     * { box-sizing: border-box; }
-    body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: var(--bg); color: var(--text); }
-    .shell { max-width: 1400px; margin: 0 auto; padding: 24px; }
-    .header, .banner, .toolbar, .tabs, .meta-links { display: flex; gap: 12px; flex-wrap: wrap; }
+    body { margin: 0; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: radial-gradient(circle at 16% -10%, rgba(102,163,255,.24), transparent 36%), radial-gradient(circle at 88% 4%, rgba(52,211,153,.16), transparent 28%), linear-gradient(180deg, var(--bg2), var(--bg)); color: var(--text); min-height: 100vh; }
+    .shell { max-width: 1440px; margin: 0 auto; padding: 28px; }
+    .header, .toolbar, .tabs, .meta-links, .banner-actions, .control-actions { display: flex; gap: 12px; flex-wrap: wrap; }
     .header { justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
-    .title h1 { margin: 0; font-size: 28px; }
-    .title p { margin: 6px 0 0; color: var(--muted); }
-    .banner { align-items: center; justify-content: space-between; margin-bottom: 18px; background: linear-gradient(135deg, rgba(102,163,255,.12), rgba(52,211,153,.08)); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; }
-    .banner code { color: var(--accent); font-size: 15px; word-break: break-all; }
-    .btn, select { border: 1px solid var(--border); background: var(--panel2); color: var(--text); border-radius: 10px; padding: 8px 12px; font: inherit; }
-    .btn { cursor: pointer; }
-    .btn:hover { filter: brightness(1.08); }
-    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
-    .metric, .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+    .title h1 { margin: 0; font-size: clamp(26px, 3vw, 36px); letter-spacing: -.04em; }
+    .title p { margin: 7px 0 0; color: var(--muted); }
+    .toolbar { margin: 0; align-items: center; }
+    .banner { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; margin-bottom: 14px; background: linear-gradient(135deg, rgba(102,163,255,.18), rgba(52,211,153,.09)); border: 1px solid rgba(102,163,255,.35); border-radius: 22px; padding: 20px; box-shadow: var(--shadow); }
+    .banner-main { min-width: 0; }
+    .banner code { display: block; margin-top: 6px; color: var(--accent2); font-size: 16px; word-break: break-all; }
+    .service-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .manager-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; margin-bottom: 18px; background: rgba(18,26,43,.78); border: 1px solid var(--border); border-radius: 18px; padding: 16px 18px; }
+    .manager-panel h2, .metric-group h2 { margin: 0; font-size: 15px; letter-spacing: .01em; }
+    .manager-panel p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .summary-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+    .metric-group { background: rgba(18,26,43,.86); border: 1px solid var(--border); border-radius: 18px; padding: 14px; }
+    .metric-group-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .metric-group-sub { color: var(--muted); font-size: 12px; }
+    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .metric { position: relative; overflow: hidden; min-height: 86px; background: linear-gradient(180deg, rgba(32,45,73,.92), rgba(18,26,43,.92)); border: 1px solid var(--border); border-radius: 14px; padding: 12px; }
+    .metric::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); opacity: .8; }
+    .metric.ok::before { background: var(--ok); }
+    .metric.warn::before { background: var(--warn); }
+    .metric.bad::before { background: var(--bad); }
     .metric .label { color: var(--muted); font-size: 12px; }
-    .metric .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+    .metric .value { font-size: 28px; font-weight: 800; margin-top: 6px; letter-spacing: -.03em; }
+    .metric.wide { grid-column: 1 / -1; }
+    .card { background: rgba(18,26,43,.9); border: 1px solid var(--border); border-radius: 16px; padding: 16px; }
     .ok { color: var(--ok); }
     .warn { color: var(--warn); }
     .bad { color: var(--bad); }
-    .tabs { border-bottom: 1px solid var(--border); margin: 18px 0 14px; }
-    .tab { padding: 10px 14px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
-    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .btn, select { border: 1px solid var(--border); background: var(--panel2); color: var(--text); border-radius: 11px; padding: 8px 12px; font: inherit; }
+    .btn { cursor: pointer; transition: transform .15s ease, border-color .15s ease, filter .15s ease; }
+    .btn:hover { filter: brightness(1.08); border-color: var(--border-strong); transform: translateY(-1px); }
+    .btn.primary { background: linear-gradient(135deg, rgba(102,163,255,.38), rgba(125,211,252,.18)); border-color: rgba(102,163,255,.55); }
+    .btn.ok-btn { border-color: rgba(52,211,153,.46); color: #c8ffe9; }
+    .btn.bad-btn { border-color: rgba(248,113,113,.46); color: #ffd7d7; }
+    .tabs { background: rgba(18,26,43,.68); border: 1px solid var(--border); border-radius: 16px; padding: 6px; margin: 18px 0 14px; }
+    .tab { padding: 9px 14px; color: var(--muted); cursor: pointer; border-radius: 11px; }
+    .tab.active { color: var(--text); background: rgba(102,163,255,.16); box-shadow: inset 0 0 0 1px rgba(102,163,255,.25); }
     .panel { display: none; }
     .panel.active { display: block; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
@@ -58,12 +83,14 @@ export function renderAdminPage() {
     th { color: var(--muted); font-weight: 600; font-size: 12px; }
     .table-wrap { overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; }
     .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel2); font-size: 12px; }
-    .empty { color: var(--muted); text-align: center; padding: 24px; }
-    .meta-links { margin-top: 10px; }
+    .empty { color: var(--muted); text-align: center; padding: 30px; min-height: 120px; display: grid; place-items: center; }
+    .api-drawer { margin-top: 18px; background: rgba(18,26,43,.62); border: 1px solid var(--border); border-radius: 16px; padding: 12px 14px; }
+    .api-drawer summary { cursor: pointer; color: var(--soft); }
+    .meta-links { margin-top: 12px; }
+    .meta-links a { padding: 6px 9px; border-radius: 999px; background: rgba(102,163,255,.09); }
     .action-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     .action-row .btn { padding: 6px 10px; font-size: 12px; }
     .status-line { margin-top: 8px; color: var(--muted); font-size: 12px; }
-    .toolbar { margin: 12px; }
     .modal-backdrop { position: fixed; inset: 0; background: rgba(4, 8, 18, 0.72); display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
     .modal-backdrop.open { display: flex; }
     .modal { width: min(680px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
@@ -77,7 +104,8 @@ export function renderAdminPage() {
     .field textarea { min-height: 120px; resize: vertical; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
     .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
-    @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 980px) { .summary-groups, .banner, .manager-panel { grid-template-columns: 1fr; } }
+    @media (max-width: 720px) { .shell { padding: 18px; } .form-grid, .metric-grid { grid-template-columns: 1fr; } .header { gap: 16px; } }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
     .toast-container { position: fixed; top: 20px; right: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
@@ -90,7 +118,7 @@ export function renderAdminPage() {
     .card-toggle:hover { text-decoration: underline; }
     .card-extra { display: none; }
     .card-extra.expanded { display: block; }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; filter: none; transform: none; }
     .btn .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; margin-right: 4px; vertical-align: middle; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
@@ -115,28 +143,29 @@ export function renderAdminPage() {
     </div>
 
     <div class="banner">
-      <div>
+      <div class="banner-main">
         <div class="sub">接入地址</div>
         <code id="accessUrl">-</code>
-        <div class="meta-links">
-          <a href="/health" target="_blank">/health</a>
-          <a href="/admin/api/overview" target="_blank">/admin/api/overview</a>
-          <a href="/admin/api/agents" target="_blank">/admin/api/agents</a>
-          <a href="/admin/api/instances" target="_blank">/admin/api/instances</a>
-          <a href="/admin/api/accounts" target="_blank">/admin/api/accounts</a>
-          <a href="/admin/api/audit" target="_blank">/admin/api/audit</a>
-          <a href="/admin/api/control/status" target="_blank">/admin/api/control/status</a>
-        </div>
+        <div class="service-badges" id="serviceBadges"></div>
       </div>
-      <div class="toolbar">
-        <button class="btn" id="copyBtn">复制接入地址</button>
-        <button class="btn" id="startManagerBtn">启动 Manager</button>
-        <button class="btn" id="restartManagerBtn">重启 Manager</button>
-        <button class="btn" id="stopManagerBtn">停止 Manager</button>
+      <div class="banner-actions">
+        <button class="btn primary" id="copyBtn">复制接入地址</button>
       </div>
     </div>
 
-    <div class="metrics" id="metrics"></div>
+    <div class="manager-panel">
+      <div>
+        <h2>Manager 控制</h2>
+        <p>控制 KeyPool Manager 后台进程。启动、重启、停止都会触发状态刷新。</p>
+      </div>
+      <div class="control-actions">
+        <button class="btn ok-btn" id="startManagerBtn">启动 Manager</button>
+        <button class="btn primary" id="restartManagerBtn">重启 Manager</button>
+        <button class="btn bad-btn" id="stopManagerBtn">停止 Manager</button>
+      </div>
+    </div>
+
+    <div class="summary-groups" id="metrics"></div>
 
     <div class="tabs">
       <div class="tab active" data-tab="agents">Agents</div>
@@ -169,6 +198,19 @@ export function renderAdminPage() {
         </table>
       </div>
     </div>
+
+    <details class="api-drawer">
+      <summary>API 资源链接</summary>
+      <div class="meta-links">
+        <a href="/health" target="_blank">/health</a>
+        <a href="/admin/api/overview" target="_blank">/admin/api/overview</a>
+        <a href="/admin/api/agents" target="_blank">/admin/api/agents</a>
+        <a href="/admin/api/instances" target="_blank">/admin/api/instances</a>
+        <a href="/admin/api/accounts" target="_blank">/admin/api/accounts</a>
+        <a href="/admin/api/audit" target="_blank">/admin/api/audit</a>
+        <a href="/admin/api/control/status" target="_blank">/admin/api/control/status</a>
+      </div>
+    </details>
   </div>
 
   <div class="modal-backdrop" id="accountModalBackdrop" aria-hidden="true">
@@ -225,11 +267,40 @@ export function renderAdminPage() {
     function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
     function fmtAgo(ms) { if (!Number.isFinite(ms) || ms < 0) return '-'; if (ms < 1000) return ms + 'ms'; const s = Math.floor(ms / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm ' + (s % 60) + 's'; const h = Math.floor(m / 60); return h + 'h ' + (m % 60) + 'm'; }
     function statusPill(status) { const cls = ['ACTIVE','READY'].includes(status) ? 'ok' : ['FAILED','DESTROYED'].includes(status) ? 'bad' : 'warn'; return '<span class="pill ' + cls + '">' + escapeHtml(status || 'NONE') + '</span>'; }
-    function metricCard(label, value, cls = '') { return '<div class="metric"><div class="label">' + escapeHtml(label) + '</div><div class="value ' + cls + '">' + escapeHtml(value) + '</div></div>'; }
+    function metricCard(label, value, cls = '') { return '<div class="metric ' + cls + '"><div class="label">' + escapeHtml(label) + '</div><div class="value ' + cls + '">' + escapeHtml(value) + '</div></div>'; }
+    function metricGroup(title, subtitle, cards) { return '<section class="metric-group"><div class="metric-group-head"><h2>' + escapeHtml(title) + '</h2><span class="metric-group-sub">' + escapeHtml(subtitle) + '</span></div><div class="metric-grid">' + cards.join('') + '</div></section>'; }
     function actionButtons(accountId) { return '<div class="action-row">' + '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">部署</button>' + '<button class="btn" data-action="recover" data-account="' + escapeHtml(accountId) + '">恢复</button>' + '<button class="btn" data-action="destroy" data-account="' + escapeHtml(accountId) + '">销毁</button>' + '</div>'; }
     async function postJson(url) { const resp = await fetch(url, { method: 'POST' }); const text = await resp.text(); let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; } if (!resp.ok) { throw new Error(data?.message || data?.error || ('HTTP ' + resp.status)); } return data; }
-    async function refresh() { const [overview, agentsRes, instancesRes, accountsRes] = await Promise.all([ fetch('/admin/api/overview').then(r => r.json()), fetch('/admin/api/agents').then(r => r.json()), fetch('/admin/api/instances').then(r => r.json()), fetch('/admin/api/accounts').then(r => r.json()) ]); const accounts = accountsRes.accounts || []; state.accounts = accounts; renderOverview(overview); renderAgents(agentsRes.agents || []); renderInstances(Object.values(instancesRes.instances || {})); renderAccounts(accounts); if (state.activeTab === 'audit') { try { await refreshAudit(); } catch {} } }
-    function renderOverview(data) { document.getElementById('accessUrl').textContent = data?.service?.accessUrl || '-'; document.getElementById('metrics').innerHTML = [ metricCard('服务状态', data?.service?.status || '-'), metricCard('Manager', data?.service?.manager?.running ? '运行中' : '未运行', data?.service?.manager?.running ? 'ok' : 'warn'), metricCard('Agents', data?.metrics?.agents ?? 0), metricCard('Healthy', data?.metrics?.healthyAgents ?? 0, 'ok'), metricCard('Inflight', data?.metrics?.inflight ?? 0), metricCard('实例', data?.metrics?.instances ?? 0), metricCard('已验证', data?.metrics?.verifiedInstances ?? 0, 'ok'), metricCard('可重试失败', data?.metrics?.retryableFailures ?? 0, 'warn'), metricCard('History确认', data?.metrics?.historyConfirmedStages ?? 0, 'warn'), metricCard('异常', data?.metrics?.failedInstances ?? 0, 'bad') ].join(''); }
+    async function refresh() { const [overview, agentsRes, instancesRes, accountsRes] = await Promise.all([ fetch('/admin/api/overview', { cache: 'no-store' }).then(r => r.json()), fetch('/admin/api/agents', { cache: 'no-store' }).then(r => r.json()), fetch('/admin/api/instances', { cache: 'no-store' }).then(r => r.json()), fetch('/admin/api/accounts', { cache: 'no-store' }).then(r => r.json()) ]); const accounts = accountsRes.accounts || []; state.accounts = accounts; renderOverview(overview); renderAgents(agentsRes.agents || []); renderInstances(Object.values(instancesRes.instances || {})); renderAccounts(accounts); if (state.activeTab === 'audit') { try { await refreshAudit(); } catch {} } }
+    function renderOverview(data) {
+      const serviceStatus = data?.service?.status || '-';
+      const managerRunning = Boolean(data?.service?.manager?.running);
+      const m = data?.metrics || {};
+      document.getElementById('accessUrl').textContent = data?.service?.accessUrl || '-';
+      const badges = document.getElementById('serviceBadges');
+      if (badges) {
+        badges.innerHTML = '<span class="pill ' + (serviceStatus === 'ok' ? 'ok' : 'warn') + '">服务 ' + escapeHtml(serviceStatus) + '</span>' + '<span class="pill ' + (managerRunning ? 'ok' : 'warn') + '">Manager ' + escapeHtml(managerRunning ? '运行中' : '未运行') + '</span>';
+      }
+      document.getElementById('metrics').innerHTML = [
+        metricGroup('Agent 状态', '代理连接层', [
+          metricCard('Agents', m.agents ?? 0),
+          metricCard('Healthy', m.healthyAgents ?? 0, 'ok'),
+          metricCard('Inflight', m.inflight ?? 0, (m.inflight ?? 0) > 0 ? 'warn' : '')
+        ]),
+        metricGroup('实例状态', '账号运行实例', [
+          metricCard('实例总数', m.instances ?? 0),
+          metricCard('已验证', m.verifiedInstances ?? 0, 'ok'),
+          metricCard('异常', m.failedInstances ?? 0, (m.failedInstances ?? 0) > 0 ? 'bad' : ''),
+          metricCard('可重试失败', m.retryableFailures ?? 0, (m.retryableFailures ?? 0) > 0 ? 'warn' : '')
+        ]),
+        metricGroup('账号与服务', '配置与运行状态', [
+          metricCard('账号总数', m.accounts ?? 0),
+          metricCard('已启用', m.enabledAccounts ?? 0, 'ok'),
+          metricCard('服务状态', serviceStatus, serviceStatus === 'ok' ? 'ok' : 'warn'),
+          metricCard('Manager', managerRunning ? '运行中' : '未运行', managerRunning ? 'ok' : 'warn')
+        ])
+      ].join('');
+    }
     function renderAgents(agents) { const root = document.getElementById('agentsGrid'); if (!agents.length) { root.innerHTML = '<div class="card empty">当前没有 Agent 连接到 Gateway</div>'; return; } root.innerHTML = agents.map(agent => { const health = agent.healthy ? '<span class="pill ok">健康</span>' : '<span class="pill bad">异常</span>'; return '<div class="card">' + '<h3>' + escapeHtml(agent.agentId) + '</h3>' + '<div class="sub">account=' + escapeHtml(agent.accountId) + ' · instance=' + escapeHtml(agent.instanceId || '-') + '</div>' + '<div style="margin-top:8px">' + health + '</div>' + '<div class="kv">' + '<div class="k">模型</div><div class="v mono">' + escapeHtml((agent.models || []).join(', ') || '-') + '</div>' + '<div class="k">连接时长</div><div class="v">' + escapeHtml(fmtAgo(agent.connectedAgoMs)) + '</div>' + '<div class="k">Inflight</div><div class="v">' + escapeHtml(agent.inflight) + '</div>' + '<div class="k">成功/失败</div><div class="v">' + escapeHtml(agent.successCount + ' / ' + agent.failureCount) + '</div>' + '<div class="k">平均延迟</div><div class="v">' + escapeHtml(agent.avgLatency + 'ms') + '</div>' + '</div></div>'; }).join(''); }
     function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => { const id = 'inst-' + escapeHtml(item.accountId); return '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">绑定 Agent</div><div class="v mono">' + escapeHtml(item.agentId || '-') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(item.lastDeployAt || '-') + '</div>' + '</div>' + '<span class="card-toggle" onclick="toggleCard(\'' + id + '\')">展开详情 ▾</span>' + '<div class="card-extra" id="' + id + '">' + '<div class="kv">' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">Proxy URL</div><div class="v mono">' + escapeHtml(item.proxyUrl || '-') + '</div>' + '<div class="k">Tailnet IP</div><div class="v mono">' + escapeHtml(item.currentTailnetIpUrl || '-') + '</div>' + '<div class="k">Tailnet 域名</div><div class="v mono">' + escapeHtml(item.currentTailnetUrl || '-') + '</div>' + '<div class="k">Share URL</div><div class="v mono">' + escapeHtml(item.currentShareUrl || '-') + '</div>' + '<div class="k">Local URL</div><div class="v mono">' + escapeHtml(item.currentLocalUrl || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(item.lastVerifiedAt || '-') + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + '</div>' + actionButtons(item.accountId) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>'; }).join(''); }
     function toggleCard(id) { const el = document.getElementById(id); if (!el) return; el.classList.toggle('expanded'); const toggle = el.previousElementSibling; if (toggle) toggle.textContent = el.classList.contains('expanded') ? '收起 ▴' : '展开详情 ▾'; }
@@ -278,7 +349,7 @@ export function renderAdminPage() {
 
     function showToast(msg, type = 'ok') { const c = document.getElementById('toastContainer'); const el = document.createElement('div'); el.className = 'toast ' + type; el.textContent = msg; c.appendChild(el); requestAnimationFrame(() => el.classList.add('show')); setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000); }
     async function withLoading(btn, fn) { if (!btn || btn.disabled) return; const orig = btn.textContent; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>' + escapeHtml(orig); try { await fn(); } finally { btn.disabled = false; btn.textContent = orig; } }
-    async function refreshAudit() { const res = await fetch('/admin/api/audit?limit=100'); const data = await res.json(); renderAudit(data.entries || []); }
+    async function refreshAudit() { const res = await fetch('/admin/api/audit?limit=100', { cache: 'no-store' }); const data = await res.json(); renderAudit(data.entries || []); }
     function bindActions() {
       document.getElementById('copyBtn').addEventListener('click', async () => { const btn = document.getElementById('copyBtn'); await withLoading(btn, async () => { const text = document.getElementById('accessUrl').textContent || ''; await navigator.clipboard.writeText(text); showToast('已复制接入地址'); }); });
       document.getElementById('newAccountBtn').addEventListener('click', () => openAccountModal('create', { enabled: true, priority: 100, weight: 100, tags: [] }));
