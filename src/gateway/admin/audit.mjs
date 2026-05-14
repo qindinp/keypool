@@ -9,7 +9,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-export const workspaceRoot = resolve(__dirname, '..', '..');
+// audit.mjs 位于 src/gateway/admin/，需要向上 3 级到达仓库根目录
+export const workspaceRoot = resolve(__dirname, '..', '..', '..');
 export const accountsPath = resolve(workspaceRoot, 'accounts.json');
 
 const auditPath = resolve(workspaceRoot, '.keypool-audit.json');
