@@ -129,7 +129,7 @@ export function renderAdminPage() {
     <div class="header">
       <div class="title">
         <h1>KeyPool 控制台</h1>
-        <p>新架构兼容视图：Gateway / Agent / Manager / Skill-proxy 状态总览</p>
+        <p>Tunnel proxy 运行视图：Gateway / Manager / 实例 / 账号状态总览</p>
       </div>
       <div class="toolbar">
         <select id="refreshMs">
@@ -168,14 +168,12 @@ export function renderAdminPage() {
     <div class="summary-groups" id="metrics"></div>
 
     <div class="tabs">
-      <div class="tab active" data-tab="agents">Agents</div>
-      <div class="tab" data-tab="instances">实例</div>
+      <div class="tab active" data-tab="instances">实例</div>
       <div class="tab" data-tab="accounts">账号</div>
       <div class="tab" data-tab="audit">审计</div>
     </div>
 
-    <div class="panel active" data-panel="agents"><div class="grid" id="agentsGrid"></div></div>
-    <div class="panel" data-panel="instances"><div class="grid" id="instancesGrid"></div></div>
+    <div class="panel active" data-panel="instances"><div class="grid" id="instancesGrid"></div></div>
     <div class="panel" data-panel="accounts">
       <div class="table-wrap">
         <div class="toolbar">
@@ -204,7 +202,6 @@ export function renderAdminPage() {
       <div class="meta-links">
         <a href="/health" target="_blank">/health</a>
         <a href="/admin/api/overview" target="_blank">/admin/api/overview</a>
-        <a href="/admin/api/agents" target="_blank">/admin/api/agents</a>
         <a href="/admin/api/instances" target="_blank">/admin/api/instances</a>
         <a href="/admin/api/accounts" target="_blank">/admin/api/accounts</a>
         <a href="/admin/api/audit" target="_blank">/admin/api/audit</a>
@@ -263,7 +260,7 @@ export function renderAdminPage() {
   </div>
 
   <script>
-    const state = { timer: null, accounts: [], modalMode: 'create', activeTab: 'agents' };
+    const state = { timer: null, accounts: [], modalMode: 'create', activeTab: 'instances' };
     function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
     function fmtAgo(ms) { if (!Number.isFinite(ms) || ms < 0) return '-'; if (ms < 1000) return ms + 'ms'; const s = Math.floor(ms / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm ' + (s % 60) + 's'; const h = Math.floor(m / 60); return h + 'h ' + (m % 60) + 'm'; }
     function statusPill(status) { const cls = ['ACTIVE','READY'].includes(status) ? 'ok' : ['FAILED','DESTROYED'].includes(status) ? 'bad' : 'warn'; return '<span class="pill ' + cls + '">' + escapeHtml(status || 'NONE') + '</span>'; }
@@ -272,22 +269,18 @@ export function renderAdminPage() {
     function actionButtons(accountId) { return '<div class="action-row">' + '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">部署</button>' + '<button class="btn" data-action="recover" data-account="' + escapeHtml(accountId) + '">恢复</button>' + '<button class="btn" data-action="destroy" data-account="' + escapeHtml(accountId) + '">销毁</button>' + '</div>'; }
     async function postJson(url) { const resp = await fetch(url, { method: 'POST' }); const text = await resp.text(); let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; } if (!resp.ok) { throw new Error(data?.message || data?.error || ('HTTP ' + resp.status)); } return data; }
     async function refresh() {
-      const [overviewRes, agentsRes, instancesRes, accountsRes] = await Promise.allSettled([
+      const [overviewRes, instancesRes, accountsRes] = await Promise.allSettled([
         fetch('/admin/api/overview', { cache: 'no-store' }).then(r => r.json()),
-        fetch('/admin/api/agents', { cache: 'no-store' }).then(r => r.json()),
         fetch('/admin/api/instances', { cache: 'no-store' }).then(r => r.json()),
         fetch('/admin/api/accounts', { cache: 'no-store' }).then(r => r.json())
       ]);
       const overview = overviewRes.status === 'fulfilled' ? overviewRes.value : null;
-      const agentsData = agentsRes.status === 'fulfilled' ? agentsRes.value : { agents: [] };
       const instancesData = instancesRes.status === 'fulfilled' ? instancesRes.value : { instances: {} };
       const accountsData = accountsRes.status === 'fulfilled' ? accountsRes.value : { accounts: [] };
       if (overview) renderOverview(overview);
-      if (agentsRes.status === 'rejected') showToast('Agents 加载失败', 'warn');
       if (instancesRes.status === 'rejected') showToast('实例数据加载失败', 'warn');
       if (accountsRes.status === 'rejected') showToast('账号数据加载失败', 'warn');
       state.accounts = accountsData.accounts || [];
-      renderAgents(agentsData.agents || []);
       renderInstances(Object.values(instancesData.instances || {}));
       renderAccounts(state.accounts);
       if (state.activeTab === 'audit') { try { await refreshAudit(); } catch {} }
@@ -302,16 +295,17 @@ export function renderAdminPage() {
         badges.innerHTML = '<span class="pill ' + (serviceStatus === 'ok' ? 'ok' : 'warn') + '">服务 ' + escapeHtml(serviceStatus) + '</span>' + '<span class="pill ' + (managerRunning ? 'ok' : 'warn') + '">Manager ' + escapeHtml(managerRunning ? '运行中' : '未运行') + '</span>';
       }
       document.getElementById('metrics').innerHTML = [
-        metricGroup('Agent 状态', '代理连接层', [
-          metricCard('Agents', m.agents ?? 0),
-          metricCard('Healthy', m.healthyAgents ?? 0, 'ok'),
-          metricCard('Inflight', m.inflight ?? 0, (m.inflight ?? 0) > 0 ? 'warn' : '')
-        ]),
-        metricGroup('实例状态', '账号运行实例', [
+        metricGroup('Tunnel 实例', '当前主运行节点', [
           metricCard('实例总数', m.instances ?? 0),
+          metricCard('运行中', m.activeInstances ?? 0, 'ok'),
           metricCard('已验证', m.verifiedInstances ?? 0, 'ok'),
-          metricCard('异常', m.failedInstances ?? 0, (m.failedInstances ?? 0) > 0 ? 'bad' : ''),
-          metricCard('可重试失败', m.retryableFailures ?? 0, (m.retryableFailures ?? 0) > 0 ? 'warn' : '')
+          metricCard('异常', m.failedInstances ?? 0, (m.failedInstances ?? 0) > 0 ? 'bad' : '')
+        ]),
+        metricGroup('账号容量', '账号配置与可用性', [
+          metricCard('账号总数', m.accounts ?? 0),
+          metricCard('已启用', m.enabledAccounts ?? 0, 'ok'),
+          metricCard('可重试失败', m.retryableFailures ?? 0, (m.retryableFailures ?? 0) > 0 ? 'warn' : ''),
+          metricCard('创建中', m.creatingInstances ?? 0, (m.creatingInstances ?? 0) > 0 ? 'warn' : '')
         ]),
         metricGroup('账号与服务', '配置与运行状态', [
           metricCard('账号总数', m.accounts ?? 0),
@@ -321,8 +315,7 @@ export function renderAdminPage() {
         ])
       ].join('');
     }
-    function renderAgents(agents) { const root = document.getElementById('agentsGrid'); if (!agents.length) { root.innerHTML = '<div class="card empty">当前没有 Agent 连接到 Gateway</div>'; return; } root.innerHTML = agents.map(agent => { const health = agent.healthy ? '<span class="pill ok">健康</span>' : '<span class="pill bad">异常</span>'; return '<div class="card">' + '<h3>' + escapeHtml(agent.agentId) + '</h3>' + '<div class="sub">account=' + escapeHtml(agent.accountId) + ' · instance=' + escapeHtml(agent.instanceId || '-') + '</div>' + '<div style="margin-top:8px">' + health + '</div>' + '<div class="kv">' + '<div class="k">模型</div><div class="v mono">' + escapeHtml((agent.models || []).join(', ') || '-') + '</div>' + '<div class="k">连接时长</div><div class="v">' + escapeHtml(fmtAgo(agent.connectedAgoMs)) + '</div>' + '<div class="k">Inflight</div><div class="v">' + escapeHtml(agent.inflight) + '</div>' + '<div class="k">成功/失败</div><div class="v">' + escapeHtml(agent.successCount + ' / ' + agent.failureCount) + '</div>' + '<div class="k">平均延迟</div><div class="v">' + escapeHtml(agent.avgLatency + 'ms') + '</div>' + '</div></div>'; }).join(''); }
-    function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => { const id = 'inst-' + escapeHtml(item.accountId); return '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">绑定 Agent</div><div class="v mono">' + escapeHtml(item.agentId || '-') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(item.lastDeployAt || '-') + '</div>' + '</div>' + '<span class="card-toggle" data-toggle-card="' + id + '">展开详情 ▾</span>' + '<div class="card-extra" id="' + id + '">' + '<div class="kv">' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">Proxy URL</div><div class="v mono">' + escapeHtml(item.proxyUrl || '-') + '</div>' + '<div class="k">Tailnet IP</div><div class="v mono">' + escapeHtml(item.currentTailnetIpUrl || '-') + '</div>' + '<div class="k">Tailnet 域名</div><div class="v mono">' + escapeHtml(item.currentTailnetUrl || '-') + '</div>' + '<div class="k">Share URL</div><div class="v mono">' + escapeHtml(item.currentShareUrl || '-') + '</div>' + '<div class="k">Local URL</div><div class="v mono">' + escapeHtml(item.currentLocalUrl || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(item.lastVerifiedAt || '-') + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + '</div>' + actionButtons(item.accountId) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>'; }).join(''); }
+    function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => { const id = 'inst-' + escapeHtml(item.accountId); return '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(item.lastDeployAt || '-') + '</div>' + '</div>' + '<span class="card-toggle" data-toggle-card="' + id + '">展开详情 ▾</span>' + '<div class="card-extra" id="' + id + '">' + '<div class="kv">' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">Proxy URL</div><div class="v mono">' + escapeHtml(item.proxyUrl || '-') + '</div>' + '<div class="k">Tailnet IP</div><div class="v mono">' + escapeHtml(item.currentTailnetIpUrl || '-') + '</div>' + '<div class="k">Tailnet 域名</div><div class="v mono">' + escapeHtml(item.currentTailnetUrl || '-') + '</div>' + '<div class="k">Share URL</div><div class="v mono">' + escapeHtml(item.currentShareUrl || '-') + '</div>' + '<div class="k">Local URL</div><div class="v mono">' + escapeHtml(item.currentLocalUrl || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(item.lastVerifiedAt || '-') + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + '</div>' + actionButtons(item.accountId) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>'; }).join(''); }
     function toggleCard(id) { const el = document.getElementById(id); if (!el) return; el.classList.toggle('expanded'); const toggle = el.previousElementSibling; if (toggle) toggle.textContent = el.classList.contains('expanded') ? '收起 ▴' : '展开详情 ▾'; }
     function renderAccounts(accounts) { const body = document.getElementById('accountsBody'); if (!accounts.length) { body.innerHTML = '<tr><td colspan="8" class="empty">未找到账号配置</td></tr>'; return; } body.innerHTML = accounts.map(item => '<tr>' + '<td class="mono">' + escapeHtml(item.id) + '</td>' + '<td>' + escapeHtml(item.name) + '</td>' + '<td>' + escapeHtml(item.enabled ? '是' : '否') + '</td>' + '<td>' + escapeHtml(item.priority) + '</td>' + '<td>' + escapeHtml(item.weight ?? 100) + '</td>' + '<td>' + escapeHtml((item.tags || []).join(', ') || '-') + '</td>' + '<td>' + escapeHtml(item.hasCookie ? '已配置' : (item.hasCookieFile ? 'cookieFile' : '缺失')) + '</td>' + '<td><div class="action-row"><button class="btn" data-edit-account="' + escapeHtml(item.id) + '">编辑</button><button class="btn" data-delete-account="' + escapeHtml(item.id) + '">删除</button></div></td>' + '</tr>').join(''); }
     function renderAudit(entries) { const body = document.getElementById('auditBody'); if (!body) return; if (!entries.length) { body.innerHTML = '<tr><td colspan="5" class="empty">暂无审计记录</td></tr>'; return; } body.innerHTML = entries.map(e => '<tr>' + '<td class="mono" style="font-size:12px">' + escapeHtml(e.at) + '</td>' + '<td>' + escapeHtml(e.action) + '</td>' + '<td class="mono">' + escapeHtml(e.target) + '</td>' + '<td>' + escapeHtml(e.detail) + '</td>' + '<td>' + (e.ok ? '<span class="pill ok">成功</span>' : '<span class="pill bad">失败</span>') + '</td>' + '</tr>').join(''); }
