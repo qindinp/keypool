@@ -127,6 +127,12 @@ export function createTunnelServer(registry) {
       // 任何有效消息都证明连接仍然活着，避免长请求期间只因 pong 抖动误杀 tunnel。
       lastPong = Date.now();
 
+      // 回复 sandbox 心跳（sandbox 每 25s 发 ping，35s 没收到 pong 就断连）
+      if (msg.type === 'ping') {
+        try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
+        return;
+      }
+
       // 注册
       if (msg.type === 'register' && msg.accountId) {
         const incomingRunId = runId || msg.runId || '';
