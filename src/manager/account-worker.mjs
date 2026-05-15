@@ -171,7 +171,6 @@ export class AccountWorker {
 
       this.setState('READY', {
         createdAt: AccountWorker.sandboxCreatedAt(result),
-        destroyedAt: null,
       });
       console.log(`✅ [${this.account.id}] 实例就绪 (status=${result.status}, expires=${new Date(this.instance.expiresAt).toLocaleString()})`);
 
@@ -236,7 +235,6 @@ export class AccountWorker {
 
       this.setState('READY', {
         createdAt: AccountWorker.sandboxCreatedAt(result),
-        destroyedAt: null,
       });
       console.log(`✅ [${this.account.id}] 新实例就绪 (status=${result.status})`);
 
