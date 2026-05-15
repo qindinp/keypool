@@ -73,6 +73,28 @@ export async function restartManager(manager) {
   return { ...started, message: 'Manager 已重启' };
 }
 
+export function reloadAccounts(manager) {
+  if (!manager) {
+    return { ok: false, error: 'manager_unavailable', message: 'Manager 未挂载到 Gateway' };
+  }
+  if (typeof manager.reloadAccounts !== 'function') {
+    return { ok: false, error: 'reload_unsupported', message: '当前 Manager 版本不支持热重载' };
+  }
+  try {
+    const result = manager.reloadAccounts();
+    if (result.error) {
+      logAudit('manager.reload', '-', `失败: ${result.error}`, false);
+      return { ok: false, error: 'reload_failed', message: result.error };
+    }
+    const msg = `+${result.added.length} -${result.removed.length} ~${result.updated.length}`;
+    logAudit('manager.reload', '-', msg, true);
+    return { ok: true, message: `热重载完成: ${msg}`, ...result };
+  } catch (error) {
+    logAudit('manager.reload', '-', error?.message || String(error), false);
+    return { ok: false, error: 'reload_failed', message: error?.message || String(error) };
+  }
+}
+
 export async function runAccountAction(manager, accountId, action) {
   if (!manager) {
     return { ok: false, error: 'manager_unavailable', message: 'Manager 未挂载到 Gateway' };
@@ -291,14 +313,27 @@ export async function mutateAccountsConfig(mutator, manager, auditAction, auditT
     writeFileSync(accountsPath, JSON.stringify(Array.isArray(raw) ? list : { ...raw, accounts: list }, null, 2), 'utf-8');
 
     if (result.restartManagerAfterSave && manager) {
-      const restarted = await restartManager(manager);
-      if (!restarted.ok) {
-        if (auditAction) logAudit(auditAction, auditTarget || '-', `配置已保存，但 Manager 重载失败：${restarted.message || restarted.error || 'unknown'}`, false);
-        return {
-          ok: false,
-          error: 'manager_restart_failed',
-          message: `账号配置已保存，但 Manager 重载失败：${restarted.message || restarted.error || 'unknown error'}`,
-        };
+      if (typeof manager.reloadAccounts === 'function') {
+        const reloaded = manager.reloadAccounts();
+        if (reloaded.error) {
+          if (auditAction) logAudit(auditAction, auditTarget || '-', `配置已保存，但 Manager 热重载失败：${reloaded.error}`, false);
+          return {
+            ok: false,
+            error: 'manager_reload_failed',
+            message: `账号配置已保存，但 Manager 热重载失败：${reloaded.error}`,
+          };
+        }
+      } else {
+        // fallback：旧版 Manager 没有 reloadAccounts，走 restart
+        const restarted = await restartManager(manager);
+        if (!restarted.ok) {
+          if (auditAction) logAudit(auditAction, auditTarget || '-', `配置已保存，但 Manager 重启失败：${restarted.message || restarted.error || 'unknown'}`, false);
+          return {
+            ok: false,
+            error: 'manager_restart_failed',
+            message: `账号配置已保存，但 Manager 重启失败：${restarted.message || restarted.error || 'unknown error'}`,
+          };
+        }
       }
     }
 

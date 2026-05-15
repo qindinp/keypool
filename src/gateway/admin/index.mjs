@@ -10,6 +10,7 @@ import {
   startManager,
   stopManager,
   restartManager,
+  reloadAccounts,
   runAccountAction,
   createAccount,
   updateAccount,
@@ -100,6 +101,8 @@ export function createAdminHandler(registry, context = {}) {
       handler: async (req, res) => jsonResult(res, await stopManager(mgr())) },
     { path: '/admin/api/control/restart', method: 'POST',
       handler: async (req, res) => jsonResult(res, await restartManager(mgr())) },
+    { path: '/admin/api/accounts/reload', method: 'POST',
+      handler: async (req, res) => jsonResult(res, reloadAccounts(mgr())) },
 
     // ── POST：账号创建 ──
     { path: '/admin/api/accounts', method: 'POST',
