@@ -80,14 +80,12 @@ export function createAdminHandler(registry, context = {}) {
 
     // ── Health ──
     { path: '/health', handler: (req, res) => {
-      const healthyAgents = registry.getHealthy();
       const instanceStates = [...registry.getAllInstances().values()];
       const verifiedInstances = instanceStates.filter(s => s?.verified || s?.status === 'ACTIVE');
       const deployingInstances = instanceStates.filter(s => ['DEPLOYING', 'DEPLOYED_UNVERIFIED', 'READY', 'RECOVERING'].includes(s?.status));
       const failedInstances = instanceStates.filter(s => s?.status === 'FAILED');
       json(res, {
-        status: verifiedInstances.length > 0 || healthyAgents.length > 0 ? 'ok' : 'degraded',
-        agents: healthyAgents.length,
+        status: verifiedInstances.length > 0 ? 'ok' : 'degraded',
         verifiedInstances: verifiedInstances.length,
         deployingInstances: deployingInstances.length,
         failedInstances: failedInstances.length,

@@ -48,42 +48,38 @@ const MIMO_REJECTED_PARAMS = new Set([
 
 /**
  * Strip unsupported params from request body for MiMo upstream
- * Returns { strippedBody, removedParams } or null if nothing changed
+ * Accepts a parsed object, returns { result, removedParams } or null if nothing changed.
  */
-export function stripUnsupportedParams(body, model = null) {
-  if (!body) return null;
-  try {
-    const parsed = JSON.parse(body);
-    const effectiveModel = stripModelPrefix(model || parsed.model || '');
-    if (effectiveModel && !effectiveModel.startsWith('mimo-')) return null;
+export function stripUnsupportedParams(parsed, model = null) {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const effectiveModel = stripModelPrefix(model || parsed.model || '');
+  if (effectiveModel && !effectiveModel.startsWith('mimo-')) return null;
 
-    const removed = [];
+  const removed = [];
+  const result = { ...parsed };
 
-    // OpenAI newer clients send max_completion_tokens, while MiMo's
-    // OpenAI-compatible endpoint accepts the older max_tokens name.
-    // Preserve the user's limit instead of dropping it when possible.
-    if ('max_completion_tokens' in parsed) {
-      if (!('max_tokens' in parsed)) {
-        parsed.max_tokens = parsed.max_completion_tokens;
-        removed.push(`max_completion_tokens=${JSON.stringify(parsed.max_completion_tokens)}->max_tokens`);
-      } else {
-        removed.push(`max_completion_tokens=${JSON.stringify(parsed.max_completion_tokens)}`);
-      }
-      delete parsed.max_completion_tokens;
+  // OpenAI newer clients send max_completion_tokens, while MiMo's
+  // OpenAI-compatible endpoint accepts the older max_tokens name.
+  // Preserve the user's limit instead of dropping it when possible.
+  if ('max_completion_tokens' in result) {
+    if (!('max_tokens' in result)) {
+      result.max_tokens = result.max_completion_tokens;
+      removed.push(`max_completion_tokens=${JSON.stringify(result.max_completion_tokens)}->max_tokens`);
+    } else {
+      removed.push(`max_completion_tokens=${JSON.stringify(result.max_completion_tokens)}`);
     }
-
-    for (const key of MIMO_REJECTED_PARAMS) {
-      if (key in parsed) {
-        removed.push(`${key}=${JSON.stringify(parsed[key])}`);
-        delete parsed[key];
-      }
-    }
-
-    if (removed.length === 0) return null;
-    return { strippedBody: JSON.stringify(parsed), removedParams: removed };
-  } catch {
-    return null;
+    delete result.max_completion_tokens;
   }
+
+  for (const key of MIMO_REJECTED_PARAMS) {
+    if (key in result) {
+      removed.push(`${key}=${JSON.stringify(result[key])}`);
+      delete result[key];
+    }
+  }
+
+  if (removed.length === 0) return null;
+  return { result, removedParams: removed };
 }
 
 /**
@@ -96,64 +92,54 @@ export function stripUnsupportedParams(body, model = null) {
  * 修复策略：对 MiMo 模型，为所有缺少 reasoning_content 的 assistant 消息注入
  * reasoning_content: null，让 MiMo 不再报错。
  *
- * @param {string} body - JSON string of request body
- * @param {string} model - already-stripped model name
- * @returns {{ fixedBody: string, patched: boolean }}
+ * Accepts a parsed object, returns { result, patched } or null if nothing changed.
  */
-export function fixMimoReasoningContent(body, model) {
-  if (!body || !model) return { fixedBody: body, patched: false };
+export function fixMimoReasoningContent(parsed, model) {
+  if (!parsed || !model) return null;
   // Only apply to MiMo models
-  if (!model.startsWith('mimo-')) return { fixedBody: body, patched: false };
+  if (!model.startsWith('mimo-')) return null;
 
-  try {
-    const parsed = JSON.parse(body);
-    const messages = parsed.messages;
-    if (!Array.isArray(messages)) return { fixedBody: body, patched: false };
+  const messages = parsed.messages;
+  if (!Array.isArray(messages)) return null;
 
-    let patched = false;
-    let injected = 0;
-    let existing = 0;
-    let missingToolCalls = 0;
+  let patched = false;
+  let injected = 0;
+  let existing = 0;
+  let missingToolCalls = 0;
+  const newMessages = [];
 
-    for (const msg of messages) {
-      if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
-        console.warn(`⚠️ proxy fix: skip non-object message in MiMo reasoning_content shim type=${Array.isArray(msg) ? 'array' : typeof msg}`);
-        continue;
-      }
-      if (msg.role !== 'assistant') continue;
-      if ('reasoning_content' in msg) {
-        existing++;
-        continue;
-      }
-
-      // Xiaomi MiMo thinking-mode requirement (2026-05-12 notice):
-      // historical assistant messages containing tool_calls must carry
-      // reasoning_content back to the API. OpenClaw synthetic compaction
-      // summaries can also appear as assistant messages; do not mark those as
-      // thinking-mode turns unless they actually contain tool_calls.
-      if (!Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0) {
-        continue;
-      }
-
-      missingToolCalls++;
-      // Native probing shows a missing field returns 400, while null is
-      // accepted. This cannot reconstruct the original chain-of-thought, but
-      // it prevents hard request failure without polluting ordinary assistant
-      // messages or compaction summaries.
-      msg.reasoning_content = null;
-      injected++;
-      patched = true;
+  for (const msg of messages) {
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+      console.warn(`⚠️ proxy fix: skip non-object message in MiMo reasoning_content shim type=${Array.isArray(msg) ? 'array' : typeof msg}`);
+      newMessages.push(msg);
+      continue;
+    }
+    if (msg.role !== 'assistant') {
+      newMessages.push(msg);
+      continue;
+    }
+    if ('reasoning_content' in msg) {
+      existing++;
+      newMessages.push(msg);
+      continue;
     }
 
-    if (patched || missingToolCalls || existing) {
-      console.log(`🔧 proxy fix: MiMo reasoning_content existing=${existing} injectedNull=${injected} toolCallAssistantsMissing=${missingToolCalls}`);
+    if (!Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0) {
+      newMessages.push(msg);
+      continue;
     }
-    if (patched) return { fixedBody: JSON.stringify(parsed), patched: true };
-    return { fixedBody: body, patched: false };
-  } catch (err) {
-    console.warn(`⚠️ proxy fix: MiMo reasoning_content shim skipped: ${err.message}`);
-    return { fixedBody: body, patched: false };
+
+    missingToolCalls++;
+    newMessages.push({ ...msg, reasoning_content: null });
+    injected++;
+    patched = true;
   }
+
+  if (patched || missingToolCalls || existing) {
+    console.log(`🔧 proxy fix: MiMo reasoning_content existing=${existing} injectedNull=${injected} toolCallAssistantsMissing=${missingToolCalls}`);
+  }
+  if (patched) return { result: { ...parsed, messages: newMessages }, patched: true };
+  return null;
 }
 
 export function getMimoTunnelTimeoutMs(body, model) {
@@ -288,6 +274,157 @@ function logToolCallFailure(diag, accountId, err) {
 }
 
 /**
+ * Merge OpenAI streaming usage into finish_reason chunks.
+ *
+ * MiMo sends usage in a separate final chunk with empty choices,
+ * instead of including it in the finish_reason chunk.
+ * Proxies like CC Switch only look at the finish_reason chunk for usage,
+ * so we need to merge the usage into the finish_reason chunk.
+ *
+ * This function wraps res.write to intercept streaming data and merge
+ * usage from the final chunk into the finish_reason chunk.
+ */
+function installStreamingUsageMerger(res) {
+  if (res.__keypoolUsageMergerInstalled) return;
+  res.__keypoolUsageMergerInstalled = true;
+
+  let lineBuf = '';
+  let pendingFinishParsed = null;  // parsed JSON of the buffered finish_reason chunk
+  let pendingFinishLines = [];     // raw lines of the finish_reason event (event:, id:, data:)
+  let inPendingEvent = false;
+  let mergeCount = 0;
+
+  const originalWrite = res.write.bind(res);
+  res.write = (chunk, ...args) => {
+    const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : typeof chunk === 'string' ? chunk : String(chunk);
+    lineBuf += text;
+
+    let nlIdx;
+    while ((nlIdx = lineBuf.indexOf('\n')) !== -1) {
+      const line = lineBuf.slice(0, nlIdx + 1);
+      lineBuf = lineBuf.slice(nlIdx + 1);
+      const trimmed = line.trim();
+
+      // Empty line = end of SSE event
+      if (trimmed === '') {
+        if (inPendingEvent && pendingFinishParsed) {
+          // We have a buffered finish_reason event. Don't forward yet -
+          // wait for the next event to see if it's a usage event.
+          // Keep the empty line in the buffer.
+          pendingFinishLines.push(line);
+        } else {
+          originalWrite(line);
+        }
+        continue;
+      }
+
+      // Data line
+      if (trimmed.startsWith('data: ')) {
+        const payload = trimmed.slice(6).trim();
+
+        if (payload === '[DONE]') {
+          // Flush any pending finish_reason event before [DONE]
+          if (pendingFinishParsed) {
+            for (const l of pendingFinishLines) originalWrite(l);
+            originalWrite('\n');
+            pendingFinishParsed = null;
+            pendingFinishLines = [];
+          }
+          originalWrite(line);
+          continue;
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(payload);
+        } catch {
+          // Parse error - flush pending and forward as-is
+          if (pendingFinishParsed) {
+            for (const l of pendingFinishLines) originalWrite(l);
+            originalWrite('\n');
+            pendingFinishParsed = null;
+            pendingFinishLines = [];
+            inPendingEvent = false;
+          }
+          originalWrite(line);
+          continue;
+        }
+
+        // Usage-only chunk (choices: [] with usage) + we have a buffered finish_reason
+        if (Array.isArray(parsed.choices) && parsed.choices.length === 0 && parsed.usage && pendingFinishParsed) {
+          // Merge usage into the buffered finish_reason chunk
+          pendingFinishParsed.usage = parsed.usage;
+          const mergedLine = `data: ${JSON.stringify(pendingFinishParsed)}\n`;
+          // Replace the data line in pendingFinishLines
+          for (let i = 0; i < pendingFinishLines.length; i++) {
+            if (pendingFinishLines[i].trim().startsWith('data: ')) {
+              pendingFinishLines[i] = mergedLine;
+              break;
+            }
+          }
+          for (const l of pendingFinishLines) originalWrite(l);
+          originalWrite('\n');
+          mergeCount++;
+          console.log(`🔗 streaming usage merged into finish_reason chunk (count=${mergeCount})`);
+          pendingFinishParsed = null;
+          pendingFinishLines = [];
+          inPendingEvent = false;
+          continue; // skip this usage chunk
+        }
+
+        // Finish_reason chunk with null usage - buffer it
+        const hasFinishReason = parsed.choices?.[0]?.finish_reason;
+        const hasNullUsage = !parsed.usage || parsed.usage === null;
+        if (hasFinishReason && hasNullUsage) {
+          pendingFinishParsed = parsed;
+          pendingFinishLines = [line];
+          inPendingEvent = true;
+          continue;
+        }
+
+        // Regular chunk - flush pending first
+        if (pendingFinishParsed) {
+          for (const l of pendingFinishLines) originalWrite(l);
+          originalWrite('\n');
+          pendingFinishParsed = null;
+          pendingFinishLines = [];
+          inPendingEvent = false;
+        }
+
+        originalWrite(line);
+      } else {
+        // Non-data line (event:, id:, etc.)
+        if (inPendingEvent) {
+          pendingFinishLines.push(line);
+        } else {
+          originalWrite(line);
+        }
+      }
+    }
+
+    return true;
+  };
+
+  const originalEnd = res.end.bind(res);
+  res.end = (chunk, ...args) => {
+    if (chunk) {
+      res.write(chunk);
+    }
+    // Flush any remaining buffered data
+    if (pendingFinishParsed) {
+      for (const l of pendingFinishLines) originalWrite(l);
+      pendingFinishParsed = null;
+      pendingFinishLines = [];
+    }
+    if (lineBuf.trim()) {
+      originalWrite(lineBuf);
+      lineBuf = '';
+    }
+    return originalEnd(...args);
+  };
+}
+
+/**
  * 创建代理处理器（支持 tunnel → HTTP 回退 + 多 upstream 重试）
  * @param {import('./registry.mjs').Registry} registry
  * @param {Function} [sendTunnelRequest] - tunnel 发送函数（来自 tunnel.mjs）
@@ -301,12 +438,12 @@ export function createProxyHandler(registry, sendTunnelRequest) {
     // ─── Body 预处理（只做一次） ─────────────────────────
     let model = null;
     let strippedBody = body;
+    let isRequestStream = false;
     if (body) {
       try {
-        const parsed = JSON.parse(body);
-        model = parsed.model || null;
-
-        let finalParsed = parsed;
+        let finalParsed = JSON.parse(body);
+        model = finalParsed.model || null;
+        isRequestStream = !!finalParsed.stream;
 
         const strippedModel = stripModelPrefix(model);
         if (strippedModel !== model) {
@@ -315,15 +452,15 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         }
         model = strippedModel;
 
-        const paramResult = stripUnsupportedParams(JSON.stringify(finalParsed), model);
+        const paramResult = stripUnsupportedParams(finalParsed, model);
         if (paramResult) {
-          finalParsed = JSON.parse(paramResult.strippedBody);
+          finalParsed = paramResult.result;
           console.log(`🔧 proxy strip unsupported params: ${paramResult.removedParams.join(', ')}`);
         }
 
-        const fixResult = fixMimoReasoningContent(JSON.stringify(finalParsed), model);
-        if (fixResult.patched) {
-          finalParsed = JSON.parse(fixResult.fixedBody);
+        const fixResult = fixMimoReasoningContent(finalParsed, model);
+        if (fixResult) {
+          finalParsed = fixResult.result;
         }
 
         strippedBody = JSON.stringify(finalParsed);
@@ -335,6 +472,13 @@ export function createProxyHandler(registry, sendTunnelRequest) {
     if (toolDiag) {
       console.log(`🧰 MiMo tool diag start requestId=${toolDiag.requestId} model=${toolDiag.model} stream=${toolDiag.stream} tools=${toolDiag.tools} messages=${toolDiag.messages} toolResults=${toolDiag.toolResults} assistantToolCalls=${toolDiag.assistantToolCalls} bodyBytes=${toolDiag.bodyBytes}`);
       installToolCallDiagnostics(res, toolDiag);
+    }
+
+    // Install streaming usage merger for streaming requests
+    // MiMo sends usage in a separate final chunk; this merges it into the finish_reason chunk
+    // so proxies like CC Switch can properly convert to Anthropic format
+    if (isRequestStream) {
+      installStreamingUsageMerger(res);
     }
 
     // ─── 重试循环 ───────────────────────────────────────

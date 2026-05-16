@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStartPrompt, waitForTunnelRegistration } from '../src/manager/deployer.mjs';
+import { waitForTunnelRegistration } from '../src/manager/deployer.mjs';
+import { buildStartPrompt } from '../src/manager/skill-installer.mjs';
 import { spawnSync } from 'node:child_process';
 
 const ENV_OR_TEMPLATE_SRC = [

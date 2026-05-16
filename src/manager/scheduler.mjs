@@ -28,8 +28,13 @@ export class Scheduler {
     this.running = true;
     console.log(`⏰ 调度器启动 (间隔 ${this.checkInterval / 1000}s, 续期阈值 ${this.renewBefore / 1000}s)`);
 
+    // 首次 tick 加随机 jitter，避免多个 worker 同时触发（thundering herd）
+    const jitter = Math.random() * this.checkInterval * 0.15;
+    await this._sleep(jitter);
+
     while (this.running) {
       await this.tick();
+      if (!this.running) break;
       await this._sleep(this.checkInterval);
     }
   }

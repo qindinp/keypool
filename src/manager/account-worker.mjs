@@ -226,12 +226,13 @@ export class AccountWorker {
     try {
       const result = await this.api.createInstance(this.account.cookie);
 
-      this.instance = {
+      const newInstance = {
         accountId: this.account.id,
         status: result.status,
         expiresAt: result.expireTime || (Date.now() + 3600_000),
         createdAt: Date.now(),
       };
+      this.instance = newInstance;
 
       this.setState('READY', {
         createdAt: AccountWorker.sandboxCreatedAt(result),
@@ -269,7 +270,10 @@ export class AccountWorker {
       }
 
       // 销毁旧实例
-      if (oldInstance) {
+      // 注意: destroyInstance API 基于 cookie 操作，无法指定 instanceId。
+      // 守卫：仅在 this.instance 仍指向刚创建的实例时才执行销毁，
+      // 避免在并发 renew 或平台自动替换后误销毁新实例。
+      if (oldInstance && this.instance === newInstance) {
         try {
           await this.api.destroyInstance(this.account.cookie);
           console.log(`🗑️ [${this.account.id}] 旧实例已销毁`);

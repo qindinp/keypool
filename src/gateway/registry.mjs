@@ -132,15 +132,26 @@ export class Registry {
   }
 
   /**
+   * 不可变更新实例状态
+   * @param {string} accountId
+   * @param {object} updates
+   */
+  _updateState(accountId, updates) {
+    const old = this.instances.get(accountId);
+    if (!old) return;
+    this.instances.set(accountId, { ...old, ...updates });
+  }
+
+  /**
    * 标记代理请求成功
    */
   markProxySuccess(accountId, latencyMs) {
-    const state = this.instances.get(accountId);
-    if (!state) return;
-    state.lastUsedAt = new Date().toISOString();
-    state.lastProxyLatencyMs = latencyMs;
-    state.healthOk = true;
-    state.consecutiveFailures = 0;
+    this._updateState(accountId, {
+      lastUsedAt: new Date().toISOString(),
+      lastProxyLatencyMs: latencyMs,
+      healthOk: true,
+      consecutiveFailures: 0,
+    });
   }
 
   /**
@@ -148,13 +159,15 @@ export class Registry {
    * 会将 healthOk 设为 false，影响路由选择
    */
   markProxyFailure(accountId, error) {
-    const state = this.instances.get(accountId);
-    if (!state) return;
-    state.lastHealthError = error;
-    state.lastHealthErrorAt = new Date().toISOString();
-    state.lastProxyError = error;
-    state.healthOk = false;
-    state.consecutiveFailures = (state.consecutiveFailures || 0) + 1;
+    const old = this.instances.get(accountId);
+    if (!old) return;
+    this._updateState(accountId, {
+      lastHealthError: error,
+      lastHealthErrorAt: new Date().toISOString(),
+      lastProxyError: error,
+      healthOk: false,
+      consecutiveFailures: (old.consecutiveFailures || 0) + 1,
+    });
   }
 
   /**
@@ -162,31 +175,11 @@ export class Registry {
    * 不影响 healthOk（连接本身是通的）
    */
   markProxyUpstreamError(accountId, status, body) {
-    const state = this.instances.get(accountId);
-    if (!state) return;
-    state.lastUpstreamStatus = status;
-    state.lastUpstreamError = typeof body === 'string' ? body.slice(0, 500) : body;
-    state.lastUsedAt = new Date().toISOString();
-    // 不设 healthOk = false；连接正常，只是上游返回了业务错误
-  }
-
-  // ─── Agent 查询（兼容旧 Admin API） ───────────────────────
-
-  /**
-   * 获取所有已注册的 Agent 条目
-   * 当前架构已移除 Agent WS 回连，返回空数组
-   * @returns {Array<object>}
-   */
-  getAll() {
-    return [];
-  }
-
-  /**
-   * 获取健康的 Agent 条目
-   * 当前架构已移除 Agent WS 回连，返回空数组
-   * @returns {Array<object>}
-   */
-  getHealthy() {
-    return [];
+    this._updateState(accountId, {
+      lastUpstreamStatus: status,
+      lastUpstreamError: typeof body === 'string' ? body.slice(0, 500) : body,
+      lastUsedAt: new Date().toISOString(),
+      // 不设 healthOk = false；连接正常，只是上游返回了业务错误
+    });
   }
 }

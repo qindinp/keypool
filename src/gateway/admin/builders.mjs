@@ -11,7 +11,6 @@ import { accountsPath } from './audit.mjs';
 import { buildManagerStatus } from './handlers.mjs';
 
 export function buildOverview(registry, req, context = {}) {
-  const agents = buildAgents(registry);
   const instances = buildInstances(registry);
   const accounts = loadAccountsSummary();
   const host = req?.headers?.host || '127.0.0.1:9300';
@@ -25,7 +24,7 @@ export function buildOverview(registry, req, context = {}) {
 
   return {
     service: {
-      status: verifiedInstances > 0 || agents.some(item => item.healthy) ? 'ok' : 'degraded',
+      status: verifiedInstances > 0 ? 'ok' : 'degraded',
       accessUrl: `http://${host}/v1`,
       adminUrl: `http://${host}/admin`,
       healthUrl: `http://${host}/health`,
@@ -33,9 +32,6 @@ export function buildOverview(registry, req, context = {}) {
       manager,
     },
     metrics: {
-      agents: agents.length,
-      healthyAgents: agents.filter(item => item.healthy).length,
-      inflight: agents.reduce((sum, item) => sum + item.inflight, 0),
       accounts: accounts.accounts.length,
       enabledAccounts: accounts.accounts.filter(item => item.enabled).length,
       instances: instanceList.length,
@@ -43,29 +39,24 @@ export function buildOverview(registry, req, context = {}) {
       verifiedInstances,
       creatingInstances,
       failedInstances,
-      missingAgentBindings: instanceList.filter(item => !item.agentId).length,
       retryableFailures: instanceList.filter(item => item.status === 'FAILED' && item.retryable).length,
-      historyConfirmedStages: instanceList.filter(item => item.confirmationSource === 'history').length,
     },
   };
 }
 
 export function buildAgents(registry) {
-  const now = Date.now();
-  return registry.getAll().map(entry => ({
-    agentId: entry.agentId,
-    instanceId: entry.instanceId,
-    accountId: entry.accountId,
-    models: entry.models,
-    connectedAt: entry.connectedAt,
-    connectedAgoMs: now - entry.connectedAt,
-    healthy: entry.healthy,
-    successCount: entry.successCount,
-    failureCount: entry.failureCount,
-    inflight: entry.inflight,
-    avgLatency: entry.successCount > 0 ? Math.round(entry.totalLatency / entry.successCount) : 0,
-    lastUsed: entry.lastUsed || 0,
-  }));
+  const result = [];
+  for (const [accountId, state] of registry.getAllInstances()) {
+    if (!state?.tunnel) continue;
+    result.push({
+      accountId,
+      status: state.status || 'NONE',
+      connectedAt: state.tunnelConnectedAt || null,
+      verified: !!state.verified,
+      healthOk: !!state.healthOk,
+    });
+  }
+  return result;
 }
 
 export function buildInstances(registry) {
@@ -74,11 +65,6 @@ export function buildInstances(registry) {
     result[accountId] = {
       accountId,
       status: state?.status || 'NONE',
-      agentId: state?.agentId || null,
-      currentTailnetIpUrl: state?.currentTailnetIpUrl || null,
-      currentTailnetUrl: state?.currentTailnetUrl || null,
-      currentShareUrl: state?.currentShareUrl || null,
-      currentLocalUrl: state?.currentLocalUrl || null,
       lastDeployAt: state?.lastDeployAt || null,
       lastHealthError: state?.lastHealthError || null,
       lastDeployError: state?.lastDeployError || null,
@@ -90,11 +76,10 @@ export function buildInstances(registry) {
       deployStatus: state?.deployStatus || null,
       failureType: state?.failureType || null,
       retryable: !!state?.retryable,
-      confirmationSource: state?.confirmationSource || null,
-      responseText: state?.responseText || null,
       deployTimeline: Array.isArray(state?.deployTimeline) ? state.deployTimeline : [],
       proxyUrl: state?.proxyUrl || null,
-      agentOnline: !!state?.agentOnline,
+      tunnelConnectedAt: state?.tunnelConnectedAt || null,
+      tunnelRunId: state?.tunnelRunId || null,
       deployCount: state?.deployCount || 0,
       createdAt: state?.createdAt || null,
       destroyedAt: state?.destroyedAt || null,

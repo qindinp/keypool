@@ -13,41 +13,26 @@
  *   KEYPOOL_PUBLIC_HTTP_BASE - 远端实例下载 bundle 使用的公开 HTTP 基址
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { createGateway } from '../src/gateway/index.mjs';
 import { createManager } from '../src/manager/index.mjs';
+import { createConfig } from '../src/manager/config.mjs';
 
-function readProjectConfig() {
-  try {
-    const parsed = JSON.parse(readFileSync(resolve(process.cwd(), 'config.json'), 'utf-8'));
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-const fileConfig = readProjectConfig();
-const port = parseInt(process.env.PORT) || fileConfig.port || 9300;
-const host = process.env.HOST || fileConfig.host || '0.0.0.0';
+const config = createConfig();
 const accountsPath = process.env.ACCOUNTS_PATH || undefined;
-const gatewayPublicWsUrl = process.env.KEYPOOL_PUBLIC_WS_URL || process.env.KEYPOOL_GATEWAY_URL || fileConfig.publicWsUrl || 'wss://pc-20250301fuan.tail59e491.ts.net/tunnel';
-const gatewayPublicHttpBase = process.env.KEYPOOL_PUBLIC_HTTP_BASE || process.env.KEYPOOL_GATEWAY_HTTP_BASE || fileConfig.publicHttpBase || 'https://pc-20250301fuan.tail59e491.ts.net';
 
 async function main() {
   console.log('🔑 KeyPool 启动中...');
-  console.log(`   端口: ${port}`);
-  console.log(`   地址: ${host}`);
+  console.log(`   端口: ${config.port}`);
+  console.log(`   地址: ${config.host}`);
 
-  const gateway = createGateway({ port, host, manager: null });
+  const gateway = createGateway({ port: config.port, host: config.host, manager: null });
   await gateway.start();
 
-  const gatewayUrl = gatewayPublicWsUrl;
   const manager = createManager(gateway.registry, {
     accountsPath,
-    gatewayUrl,
-    gatewayHttpBase: gatewayPublicHttpBase,
-    localSrcDir: process.env.LOCAL_SRC_DIR || '',
+    gatewayUrl: config.publicWsUrl,
+    gatewayHttpBase: config.publicHttpBase,
+    localSrcDir: config.localSrcDir,
   });
 
   if (manager) {

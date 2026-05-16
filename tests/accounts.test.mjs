@@ -42,3 +42,68 @@ test('validateAccountsConfig rejects absolute or parent cookieFile paths', () =>
   assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', cookieFile: '../secret.txt' }] }), /cookieFile/);
   assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', cookieFile: 'C:/secret.txt' }] }), /cookieFile/);
 });
+
+// ─── Extended validation ────────────────────────────────────────
+
+test('validateAccountsConfig rejects non-string id', () => {
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 123, cookie: 'x' }] }), /id/);
+});
+
+test('validateAccountsConfig rejects non-string name', () => {
+  assert.throws(() => validateAccountsConfig({ accounts: [{ name: 123, cookie: 'x' }] }), /name/);
+});
+
+test('validateAccountsConfig rejects non-array tags', () => {
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', tags: 'bad', cookie: 'x' }] }), /tags/);
+});
+
+test('validateAccountsConfig rejects non-object meta', () => {
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', meta: 'bad', cookie: 'x' }] }), /meta/);
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', meta: [1, 2], cookie: 'x' }] }), /meta/);
+});
+
+test('validateAccountsConfig rejects non-finite weight', () => {
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', weight: Infinity, cookie: 'x' }] }), /weight/);
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', weight: NaN, cookie: 'x' }] }), /weight/);
+});
+
+test('validateAccountsConfig accepts valid optional fields', () => {
+  const result = validateAccountsConfig({
+    accounts: [{
+      id: 'a',
+      name: 'Account A',
+      enabled: true,
+      priority: 50,
+      weight: 200,
+      tags: ['prod'],
+      meta: { region: 'us-east' },
+      cookie: 'token=abc',
+    }],
+  });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, 'a');
+  assert.equal(result[0].priority, 50);
+  assert.equal(result[0].weight, 200);
+  assert.deepEqual(result[0].tags, ['prod']);
+  assert.deepEqual(result[0].meta, { region: 'us-east' });
+});
+
+test('validateAccountsConfig rejects empty cookieFile string', () => {
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', cookieFile: '' }] }), /cookie/);
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', cookieFile: '   ' }] }), /cookie/);
+});
+
+test('validateAccountsConfig rejects backslash traversal in cookieFile', () => {
+  assert.throws(() => validateAccountsConfig({ accounts: [{ id: 'a', cookieFile: '..\\secret.txt' }] }), /cookieFile/);
+});
+
+test('validateAccountsConfig accepts multiple accounts', () => {
+  const result = validateAccountsConfig({
+    accounts: [
+      { id: 'a1', cookie: 'c1' },
+      { id: 'a2', cookie: 'c2' },
+      { id: 'a3', cookieFile: 'cookies/a3.txt' },
+    ],
+  });
+  assert.equal(result.length, 3);
+});

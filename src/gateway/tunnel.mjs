@@ -16,6 +16,7 @@
 
 import { WebSocketServer } from 'ws';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 import { resolve, join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,26 +26,31 @@ const SKILL_ROOT = resolve(__dirname, '..', '..', 'skill');
 const HEARTBEAT_INTERVAL = 120_000; // 2min — 长请求期间避免误杀 tunnel
 const HEARTBEAT_TIMEOUT = 60_000;  // 1min — 总计 3min 无数据才断连
 
+/** @type {Array<{path: string, content: string}>|null} */
+let _skillFilesCache = null;
+
 /**
- * 递归读取 skill 目录中的所有文件
- * @returns {Array<{path: string, content: string}>}
+ * 异步递归读取 skill 目录中的所有文件（带缓存）
+ * @returns {Promise<Array<{path: string, content: string}>>}
  */
-function readSkillFiles() {
+async function loadSkillFiles() {
+  if (_skillFilesCache) return _skillFilesCache;
   const files = [];
-  function walk(dir, base) {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  async function walk(dir, base) {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        walk(full, base);
+        await walk(full, base);
       } else if (entry.isFile() && (entry.name.endsWith('.mjs') || entry.name.endsWith('.md') || entry.name.endsWith('.json'))) {
         files.push({
           path: relative(base, full),
-          content: readFileSync(full, 'utf-8'),
+          content: await readFile(full, 'utf-8'),
         });
       }
     }
   }
-  walk(SKILL_ROOT, SKILL_ROOT);
+  await walk(SKILL_ROOT, SKILL_ROOT);
+  _skillFilesCache = files;
   return files;
 }
 
@@ -92,18 +98,18 @@ export function createTunnelServer(registry) {
     // ─── Bootstrap 模式：推送 skill 文件 ──────────────────
     if (isBootstrap) {
       console.log(`🚀 [bootstrap] 远端请求 bootstrap accountId=${accountId}`);
-      try {
-        const files = readSkillFiles();
+      loadSkillFiles().then(files => {
         for (const f of files) {
           ws.send(JSON.stringify({ type: 'file', path: f.path, content: f.content }));
         }
         ws.send(JSON.stringify({ type: 'done', totalFiles: files.length }));
         console.log(`✅ [bootstrap] 推送 ${files.length} 个文件完成`);
-      } catch (err) {
+      }).catch(err => {
         console.error(`❌ [bootstrap] 推送失败: ${err.message}`);
-        ws.send(JSON.stringify({ type: 'error', message: err.message }));
-      }
-      ws.close();
+        try { ws.send(JSON.stringify({ type: 'error', message: err.message })); } catch {}
+      }).finally(() => {
+        ws.close();
+      });
       return;
     }
 
@@ -273,6 +279,7 @@ export function createTunnelServer(registry) {
 
     ws.on('close', () => {
       clearInterval(heartbeat);
+      supersededRunIds.delete(accountId);
       // 清理 registry 中的 tunnel 引用
       const state = registry.getInstanceState(accountId);
       if (state?.tunnel === ws) {

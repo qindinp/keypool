@@ -292,7 +292,16 @@ export async function deleteAccount(manager, accountId) {
   }, manager, 'account.delete', accountId);
 }
 
+let _writeLock = Promise.resolve();
+
 export async function mutateAccountsConfig(mutator, manager, auditAction, auditTarget) {
+  // 串行化并发写入，避免 read-modify-write 竞态
+  const result = _writeLock.then(() => _mutateAccountsConfigInner(mutator, manager, auditAction, auditTarget));
+  _writeLock = result.catch(() => {});
+  return result;
+}
+
+async function _mutateAccountsConfigInner(mutator, manager, auditAction, auditTarget) {
   if (!existsSync(accountsPath)) {
     return { ok: false, error: 'accounts_missing', message: 'accounts.json 不存在，无法在界面中管理账号' };
   }

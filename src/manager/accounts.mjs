@@ -42,7 +42,7 @@ function normalizeAccount(raw, index, accountsPath) {
     name: raw.name || id,
     enabled: raw.enabled !== false,
     priority: Number.isFinite(raw.priority) ? raw.priority : 100,
-    weight: Number.isFinite(raw.weight) ? raw.weight : 10,
+    weight: Number.isFinite(raw.weight) ? raw.weight : 100,
     cookie: resolveCookie(raw, accountsPath),
     tags: Array.isArray(raw.tags) ? raw.tags : [],
     meta: raw.meta && typeof raw.meta === 'object' ? raw.meta : {},
