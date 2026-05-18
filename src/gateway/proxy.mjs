@@ -156,15 +156,26 @@ export function getMimoTunnelTimeoutMs(body, model) {
   return 600_000;
 }
 
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB — proxy 路径需转发完整对话历史
+
 /**
- * 读取请求体
+ * 读取请求体（带大小限制）
  * @param {import('node:http').IncomingMessage} req
  * @returns {Promise<string>}
  */
 export function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', (c) => { body += c; });
+    let bytes = 0;
+    req.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error(`Request body exceeds ${MAX_BODY_BYTES / (1024 * 1024)}MB limit`));
+        return;
+      }
+      body += c;
+    });
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
@@ -191,6 +202,67 @@ function buildOutHeaders(headers) {
 }
 
 const PROXY_MAX_RETRIES = 2;
+
+/**
+ * 消费流式响应 body 以确保连接正确归还到连接池
+ * @param {ReadableStream|null} body
+ * @returns {Promise<string>}
+ */
+async function drainStreamBody(body) {
+  if (!body) return '';
+  const chunks = [];
+  for await (const chunk of body) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8').slice(0, 500);
+}
+
+/**
+ * 带 backpressure 的流式管道：当 res.write 返回 false 时等待 drain
+ * @param {ReadableStream} readable
+ * @param {import('node:http').ServerResponse} res
+ */
+function pipeWithBackpressure(readable, res) {
+  return new Promise((resolve, reject) => {
+    const reader = readable[Symbol.asyncIterator]?.() || readable.getReader?.();
+    if (!reader) {
+      resolve();
+      return;
+    }
+
+    // Node.js async iterable path
+    const iterable = readable[Symbol.asyncIterator] ? readable : readable;
+    let finished = false;
+
+    function onDrain() {
+      pump();
+    }
+
+    async function pump() {
+      if (finished) return;
+      try {
+        for await (const chunk of iterable) {
+          if (res.writableEnded) { finished = true; resolve(); return; }
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          const ok = res.write(buf);
+          if (!ok) {
+            // 内核缓冲区满，等 drain 事件
+            await new Promise((r) => res.once('drain', r));
+          }
+        }
+        finished = true;
+        resolve();
+      } catch (err) {
+        if (!finished) {
+          finished = true;
+          reject(err);
+        }
+      }
+    }
+
+    pump();
+  });
+}
 
 function createToolCallDiagnostics(body, model, requestId) {
   if (!body || !model?.startsWith('mimo-')) return null;
@@ -284,6 +356,8 @@ function logToolCallFailure(diag, accountId, err) {
  * This function wraps res.write to intercept streaming data and merge
  * usage from the final chunk into the finish_reason chunk.
  */
+const LINEBUF_MAX_BYTES = 1024 * 1024; // 1MB — 防止单行过长导致 OOM
+
 function installStreamingUsageMerger(res) {
   if (res.__keypoolUsageMergerInstalled) return;
   res.__keypoolUsageMergerInstalled = true;
@@ -298,6 +372,21 @@ function installStreamingUsageMerger(res) {
   res.write = (chunk, ...args) => {
     const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : typeof chunk === 'string' ? chunk : String(chunk);
     lineBuf += text;
+
+    // 防止 lineBuf 无界增长（如 upstream 发了超长行或无换行数据）
+    if (lineBuf.length > LINEBUF_MAX_BYTES) {
+      // 超限：flush 缓冲区，放弃 usage merge 保证安全
+      if (pendingFinishParsed) {
+        for (const l of pendingFinishLines) originalWrite(l);
+        originalWrite('\n');
+        pendingFinishParsed = null;
+        pendingFinishLines = [];
+        inPendingEvent = false;
+      }
+      originalWrite(lineBuf);
+      lineBuf = '';
+      return true;
+    }
 
     let nlIdx;
     while ((nlIdx = lineBuf.indexOf('\n')) !== -1) {
@@ -410,9 +499,10 @@ function installStreamingUsageMerger(res) {
     if (chunk) {
       res.write(chunk);
     }
-    // Flush any remaining buffered data
+    // Flush any remaining buffered data — 通过 res.write 走完整调用链
     if (pendingFinishParsed) {
       for (const l of pendingFinishLines) originalWrite(l);
+      originalWrite('\n');
       pendingFinishParsed = null;
       pendingFinishLines = [];
     }
@@ -444,10 +534,12 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         let finalParsed = JSON.parse(body);
         model = finalParsed.model || null;
         isRequestStream = !!finalParsed.stream;
+        let bodyModified = false;
 
         const strippedModel = stripModelPrefix(model);
         if (strippedModel !== model) {
           finalParsed = { ...finalParsed, model: strippedModel };
+          bodyModified = true;
           console.log(`🔧 proxy strip model prefix: "${model}" → "${strippedModel}"`);
         }
         model = strippedModel;
@@ -455,15 +547,20 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         const paramResult = stripUnsupportedParams(finalParsed, model);
         if (paramResult) {
           finalParsed = paramResult.result;
+          bodyModified = true;
           console.log(`🔧 proxy strip unsupported params: ${paramResult.removedParams.join(', ')}`);
         }
 
         const fixResult = fixMimoReasoningContent(finalParsed, model);
         if (fixResult) {
           finalParsed = fixResult.result;
+          bodyModified = true;
         }
 
-        strippedBody = JSON.stringify(finalParsed);
+        // 只在 body 实际被修改时才重新序列化
+        if (bodyModified) {
+          strippedBody = JSON.stringify(finalParsed);
+        }
         console.log(`📤 proxy forwarding keys: [${Object.keys(finalParsed).join(', ')}] model=${finalParsed.model}`);
       } catch (err) { console.warn(`⚠️ proxy body parse error: ${err.message}`); }
     }
@@ -608,15 +705,19 @@ export function createProxyHandler(registry, sendTunnelRequest) {
 
         // 5xx：可重试（headers 还没发给客户端）
         if (response.status >= 500) {
+          // 消费完响应 body 以确保连接正确归还到池中
+          let errBody;
+          try {
+            errBody = isStream ? await drainStreamBody(response.body) : await response.text();
+          } catch { errBody = '(drain failed)'; }
+
           if (res.headersSent) {
             console.warn(`⚠️ HTTP 5xx after headers sent [${upstream.accountId}], cannot retry`);
-            const errBody = isStream ? '(streaming)' : await response.text();
             registry.markProxyUpstreamError(upstream.accountId, response.status, errBody);
             if (!res.writableEnded) { try { res.end(); } catch {} }
             return;
           }
 
-          const errBody = isStream ? '(streaming)' : await response.text();
           registry.markProxyUpstreamError(upstream.accountId, response.status, errBody);
           excludeAccountIds.add(upstream.accountId);
           lastError = `[${upstream.accountId}] HTTP ${response.status}`;
@@ -629,10 +730,8 @@ export function createProxyHandler(registry, sendTunnelRequest) {
         res.writeHead(response.status, outHeaders);
 
         if (isStream && response.body) {
-          for await (const chunk of response.body) {
-            res.write(chunk);
-          }
-          res.end();
+          await pipeWithBackpressure(response.body, res);
+          if (!res.writableEnded) res.end();
         } else {
           const text = await response.text();
           res.end(text);

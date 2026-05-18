@@ -145,6 +145,7 @@ export class Registry {
       lastProxyLatencyMs: latencyMs,
       healthOk: true,
       consecutiveFailures: 0,
+      consecutiveUpstreamErrors: 0,
     });
   }
 
@@ -166,14 +167,23 @@ export class Registry {
 
   /**
    * 标记上游业务错误（upstream 返回 4xx/5xx）
-   * 不影响 healthOk（连接本身是通的）
+   * 连续错误达到阈值后标记 healthOk=false，让路由临时排除该实例
    */
   markProxyUpstreamError(accountId, status, body) {
+    const old = this.instances.get(accountId);
+    if (!old) return;
+    const consecutive = (old.consecutiveUpstreamErrors || 0) + 1;
+    const shouldExclude = consecutive >= 3;
     this._updateState(accountId, {
       lastUpstreamStatus: status,
       lastUpstreamError: typeof body === 'string' ? body.slice(0, 500) : body,
       lastUsedAt: new Date().toISOString(),
-      // 不设 healthOk = false；连接正常，只是上游返回了业务错误
+      consecutiveUpstreamErrors: consecutive,
+      ...(shouldExclude ? {
+        healthOk: false,
+        lastHealthErrorAt: new Date().toISOString(),
+        lastHealthError: `consecutive upstream errors (${consecutive})`,
+      } : {}),
     });
   }
 }
