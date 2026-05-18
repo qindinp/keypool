@@ -201,19 +201,17 @@ test('registry: getHealthyUpstreamCount returns correct count', () => {
   assert.equal(registry.getHealthyUpstreamCount('mimo-v2.5-pro'), 1);
 });
 
-test('registry: model filtering works correctly', () => {
+test('registry: model param does not filter (instances lack model info)', () => {
   const registry = new Registry();
-  registry.updateInstanceState('a1', createInstance({ accountId: 'a1', models: ['mimo-v2.5-pro'] }));
-  registry.updateInstanceState('a2', createInstance({ accountId: 'a2', models: [] })); // wildcard
+  registry.updateInstanceState('a1', createInstance({ accountId: 'a1' }));
+  registry.updateInstanceState('a2', createInstance({ accountId: 'a2' }));
 
-  // mimo-v2.5-pro should match both
+  // model param is accepted but not used for filtering — instances don't carry model info
   const upstreams = registry.getVerifiedUpstreams('mimo-v2.5-pro');
   assert.equal(upstreams.length, 2);
 
-  // mimo-v2-flash should only match wildcard a2
   const upstreams2 = registry.getVerifiedUpstreams('mimo-v2-flash');
-  assert.equal(upstreams2.length, 1);
-  assert.equal(upstreams2[0].accountId, 'a2');
+  assert.equal(upstreams2.length, 2);
 });
 
 test('registry: 3 upstreams weighted random distributes proportionally', () => {

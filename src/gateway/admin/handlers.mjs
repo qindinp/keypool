@@ -129,6 +129,10 @@ export async function runAccountAction(manager, accountId, action) {
       });
     } else if (action === 'stop') {
       await worker.manualStop();
+    } else if (action === 'pause') {
+      await worker.pause();
+    } else if (action === 'renew') {
+      await worker.renew();
     }
 
     logAudit(`account.${action}`, accountId, 'ok', true);
@@ -203,6 +207,7 @@ export async function createAccount(manager, req) {
   const priority = Number.isFinite(Number(payload?.priority)) ? Number(payload.priority) : 100;
   const weight = Number.isFinite(Number(payload?.weight)) ? Math.max(0, Math.round(Number(payload.weight))) : 100;
   const tags = normalizeTags(payload?.tags);
+  const meta = payload?.meta && typeof payload.meta === 'object' ? payload.meta : undefined;
 
   if (!id) return { ok: false, error: 'id_required', message: '账号 ID 不能为空' };
   if (!cookie) return { ok: false, error: 'cookie_required', message: 'cookie 不能为空' };
@@ -213,7 +218,9 @@ export async function createAccount(manager, req) {
       return { ok: false, error: 'account_exists', message: `账号 ${id} 已存在` };
     }
 
-    list.push({ id, name, enabled, priority, weight, tags, cookie });
+    const newAccount = { id, name, enabled, priority, weight, tags, cookie };
+    if (meta !== undefined) newAccount.meta = meta;
+    list.push(newAccount);
     return {
       ok: true,
       accountId: id,
@@ -246,6 +253,7 @@ export async function updateAccount(manager, accountId, req) {
     const nextPriority = payload?.priority !== undefined ? (Number.isFinite(Number(payload.priority)) ? Number(payload.priority) : 100) : (Number.isFinite(Number(target.priority)) ? Number(target.priority) : 100);
     const nextWeight = payload?.weight !== undefined ? (Number.isFinite(Number(payload.weight)) ? Math.max(0, Math.round(Number(payload.weight))) : 100) : (Number.isFinite(Number(target.weight)) ? Math.max(0, Math.round(Number(target.weight))) : 100);
     const nextTags = payload?.tags !== undefined ? normalizeTags(payload.tags) : (Array.isArray(target.tags) ? target.tags : []);
+    const nextMeta = payload?.meta !== undefined ? (payload.meta && typeof payload.meta === 'object' ? payload.meta : null) : target.meta;
 
     if (!nextId) return { ok: false, error: 'id_required', message: '账号 ID 不能为空' };
     const conflict = list.some((item, index) => item !== target && String(item?.id || item?.name || `account-${index + 1}`) === nextId);
@@ -257,6 +265,7 @@ export async function updateAccount(manager, accountId, req) {
     target.priority = nextPriority;
     target.weight = nextWeight;
     target.tags = nextTags;
+    target.meta = nextMeta;
     if (nextCookie) {
       target.cookie = nextCookie;
       delete target.cookieFile;

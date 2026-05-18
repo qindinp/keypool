@@ -75,7 +75,13 @@ export function createAdminHandler(registry, context = {}) {
       json(res, loadAccountsSummary()) },
     { path: '/admin/api/audit', handler: (req, res, url) => {
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
-      json(res, { entries: auditLog.slice(-limit).reverse() });
+      const actionFilter = url.searchParams.get('action') || '';
+      const okFilter = url.searchParams.get('ok');
+      let entries = auditLog.slice(-limit).reverse();
+      if (actionFilter) entries = entries.filter(e => e.action === actionFilter);
+      if (okFilter === 'true') entries = entries.filter(e => e.ok);
+      else if (okFilter === 'false') entries = entries.filter(e => !e.ok);
+      json(res, { entries });
     }},
 
     // ── Health ──
@@ -112,7 +118,7 @@ export function createAdminHandler(registry, context = {}) {
       handler: async (req, res, url, [accountId]) =>
         jsonResult(res, await updateAccountCookie(mgr(), accountId, req)) },
     // 实例操作（deploy / recover / destroy / stop）
-    { pattern: /^\/admin\/api\/accounts\/([^/]+)\/(deploy|recover|destroy|stop)$/, method: 'POST',
+    { pattern: /^\/admin\/api\/accounts\/([^/]+)\/(deploy|recover|destroy|stop|pause|renew)$/, method: 'POST',
       handler: async (req, res, url, [accountId, action]) =>
         jsonResult(res, await runAccountAction(mgr(), accountId, action)) },
     // 账号更新

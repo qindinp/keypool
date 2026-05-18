@@ -171,6 +171,7 @@ export class AccountWorker {
 
       this.setState('READY', {
         createdAt: AccountWorker.sandboxCreatedAt(result),
+        expiresAt: this.instance.expiresAt,
       });
       console.log(`✅ [${this.account.id}] 实例就绪 (status=${result.status}, expires=${new Date(this.instance.expiresAt).toLocaleString()})`);
 
@@ -236,6 +237,7 @@ export class AccountWorker {
 
       this.setState('READY', {
         createdAt: AccountWorker.sandboxCreatedAt(result),
+        expiresAt: newInstance.expiresAt,
       });
       console.log(`✅ [${this.account.id}] 新实例就绪 (status=${result.status})`);
 
@@ -291,6 +293,14 @@ export class AccountWorker {
         this.cooldownUntil = Date.now() + (this.config.retryBaseDelay || 30_000);
       }
     }
+  }
+
+  async pause() {
+    console.log(`⏸️ [${this.account.id}] 暂停`);
+    this.setState('PAUSED', {
+      retryable: false,
+      failureType: 'paused',
+    });
   }
 
   async manualStop() {

@@ -173,14 +173,36 @@ export function renderAdminPage() {
       <div class="tab" data-tab="audit">审计</div>
     </div>
 
-    <div class="panel active" data-panel="instances"><div class="grid" id="instancesGrid"></div></div>
+    <div class="panel active" data-panel="instances">
+      <div class="toolbar" style="margin-bottom: 12px;">
+        <select id="instanceStatusFilter">
+          <option value="">全部状态</option>
+          <option value="ACTIVE">ACTIVE</option>
+          <option value="FAILED">FAILED</option>
+          <option value="DEPLOYING">DEPLOYING</option>
+          <option value="DEPLOYED_UNVERIFIED">DEPLOYED_UNVERIFIED</option>
+          <option value="CREATING">CREATING</option>
+          <option value="READY">READY</option>
+          <option value="PAUSED">PAUSED</option>
+          <option value="MANUAL_STOPPED">MANUAL_STOPPED</option>
+          <option value="DESTROYED">DESTROYED</option>
+          <option value="NONE">NONE</option>
+        </select>
+      </div>
+      <div class="grid" id="instancesGrid"></div>
+    </div>
     <div class="panel" data-panel="accounts">
       <div class="table-wrap">
         <div class="toolbar">
           <button class="btn" id="newAccountBtn">新增账号</button>
+          <select id="accountEnabledFilter">
+            <option value="">全部</option>
+            <option value="enabled">已启用</option>
+            <option value="disabled">已禁用</option>
+          </select>
         </div>
         <table>
-          <thead><tr><th>ID</th><th>名称</th><th>启用</th><th>优先级</th><th>Weight</th><th>标签</th><th>Cookie</th><th>操作</th></tr></thead>
+          <thead><tr><th>ID</th><th>名称</th><th>实例状态</th><th>启用</th><th>优先级</th><th>Weight</th><th>标签</th><th>Cookie</th><th>操作</th></tr></thead>
           <tbody id="accountsBody"></tbody>
         </table>
       </div>
@@ -189,6 +211,27 @@ export function renderAdminPage() {
       <div class="table-wrap">
         <div class="toolbar">
           <button class="btn" id="refreshAuditBtn">刷新审计日志</button>
+          <select id="auditActionFilter">
+            <option value="">全部操作</option>
+            <option value="account.create">account.create</option>
+            <option value="account.update">account.update</option>
+            <option value="account.delete">account.delete</option>
+            <option value="account.cookie">account.cookie</option>
+            <option value="account.deploy">account.deploy</option>
+            <option value="account.recover">account.recover</option>
+            <option value="account.destroy">account.destroy</option>
+            <option value="account.stop">account.stop</option>
+            <option value="account.pause">account.pause</option>
+            <option value="account.renew">account.renew</option>
+            <option value="manager.start">manager.start</option>
+            <option value="manager.stop">manager.stop</option>
+            <option value="manager.reload">manager.reload</option>
+          </select>
+          <select id="auditResultFilter">
+            <option value="">全部结果</option>
+            <option value="ok">成功</option>
+            <option value="fail">失败</option>
+          </select>
         </div>
         <table>
           <thead><tr><th>时间</th><th>操作</th><th>目标</th><th>详情</th><th>结果</th></tr></thead>
@@ -250,6 +293,11 @@ export function renderAdminPage() {
             <textarea id="accountCookieInput" name="cookie" placeholder="新增账号时必填；编辑时留空表示不修改现有 Cookie"></textarea>
             <div class="hint" id="accountCookieHint">新增账号时必须填写 Cookie；编辑时可留空，表示保持原值不变。</div>
           </div>
+          <div class="field full">
+            <label for="accountMetaInput">Meta（JSON，可选）</label>
+            <textarea id="accountMetaInput" name="meta" placeholder='{"key": "value"}'></textarea>
+            <div class="hint">自定义元数据，JSON 对象格式。留空或 {} 表示无额外信息。</div>
+          </div>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn" id="cancelAccountBtn">取消</button>
@@ -260,14 +308,14 @@ export function renderAdminPage() {
   </div>
 
   <script>
-    const state = { timer: null, accounts: [], modalMode: 'create', activeTab: 'instances', expandedCards: new Set() };
+    const state = { timer: null, accounts: [], instances: [], modalMode: 'create', activeTab: 'instances', expandedCards: new Set() };
     function escapeHtml(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
     function fmtAgo(ms) { if (!Number.isFinite(ms) || ms < 0) return '-'; if (ms < 1000) return ms + 'ms'; const s = Math.floor(ms / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm ' + (s % 60) + 's'; const h = Math.floor(m / 60); return h + 'h ' + (m % 60) + 'm'; }
     function fmtDateTime(value) { if (!value) return '-'; const date = new Date(value); if (Number.isNaN(date.getTime())) return value; return date.toLocaleString('zh-CN', { hour12: false }); }
     function statusPill(status) { const cls = ['ACTIVE','READY'].includes(status) ? 'ok' : ['FAILED','DESTROYED'].includes(status) ? 'bad' : 'warn'; return '<span class="pill ' + cls + '">' + escapeHtml(status || 'NONE') + '</span>'; }
     function metricCard(label, value, cls = '') { return '<div class="metric ' + cls + '"><div class="label">' + escapeHtml(label) + '</div><div class="value ' + cls + '">' + escapeHtml(value) + '</div></div>'; }
     function metricGroup(title, subtitle, cards) { return '<section class="metric-group"><div class="metric-group-head"><h2>' + escapeHtml(title) + '</h2><span class="metric-group-sub">' + escapeHtml(subtitle) + '</span></div><div class="metric-grid">' + cards.join('') + '</div></section>'; }
-    function actionButtons(accountId) { return '<div class="action-row">' + '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">部署</button>' + '<button class="btn" data-action="recover" data-account="' + escapeHtml(accountId) + '">恢复</button>' + '<button class="btn" data-action="destroy" data-account="' + escapeHtml(accountId) + '">销毁</button>' + '</div>'; }
+    function actionButtons(accountId, status) { const isPaused = status === 'PAUSED'; const isStopped = status === 'MANUAL_STOPPED'; const isFailed = status === 'FAILED'; const isDestroyed = status === 'DESTROYED'; const isActive = status === 'ACTIVE'; return '<div class="action-row">' + '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">部署</button>' + '<button class="btn" data-action="recover" data-account="' + escapeHtml(accountId) + '">恢复</button>' + (isActive ? '<button class="btn" data-action="pause" data-account="' + escapeHtml(accountId) + '">暂停</button>' : '') + (isPaused ? '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">恢复部署</button>' : '') + '<button class="btn" data-action="renew" data-account="' + escapeHtml(accountId) + '">续期</button>' + '<button class="btn bad-btn" data-action="destroy" data-account="' + escapeHtml(accountId) + '">销毁</button>' + '<button class="btn" data-action="stop" data-account="' + escapeHtml(accountId) + '">停止</button>' + '</div>'; }
     async function postJson(url) { const resp = await fetch(url, { method: 'POST' }); const text = await resp.text(); let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; } if (!resp.ok) { throw new Error(data?.message || data?.error || ('HTTP ' + resp.status)); } return data; }
     async function refresh() {
       const [overviewRes, instancesRes, accountsRes] = await Promise.allSettled([
@@ -282,8 +330,10 @@ export function renderAdminPage() {
       if (instancesRes.status === 'rejected') showToast('实例数据加载失败', 'warn');
       if (accountsRes.status === 'rejected') showToast('账号数据加载失败', 'warn');
       state.accounts = accountsData.accounts || [];
-      renderInstances(Object.values(instancesData.instances || {}));
-      renderAccounts(state.accounts);
+      state.instances = Object.values(instancesData.instances || {});
+      window.__lastInstances = instancesData.instances || {};
+      applyInstanceFilter();
+      renderAccounts(state.accounts, instancesData.instances || {});
       if (state.activeTab === 'audit') { try { await refreshAudit(); } catch {} }
     }
     function renderOverview(data) {
@@ -314,9 +364,11 @@ export function renderAdminPage() {
         ])
       ].join('');
     }
-    function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => { const id = 'inst-' + escapeHtml(item.accountId); return '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">创建时间</div><div class="v">' + escapeHtml(fmtDateTime(item.createdAt)) + '</div>' + '<div class="k">销毁时间</div><div class="v">' + escapeHtml(fmtDateTime(item.destroyedAt)) + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(fmtDateTime(item.lastDeployAt)) + '</div>' + '</div>' + '<span class="card-toggle" data-toggle-card="' + id + '">' + (state.expandedCards.has(id) ? '收起 ▴' : '展开详情 ▾') + '</span>' + '<div class="card-extra ' + (state.expandedCards.has(id) ? 'expanded' : '') + '" id="' + id + '">' + '<div class="kv">' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(fmtDateTime(item.lastVerifiedAt)) + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.status || step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + '</div>' + actionButtons(item.accountId) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>'; }).join(''); }
+    function fmtRemaining(ms) { if (!Number.isFinite(ms) || ms <= 0) return '-'; const s = Math.floor(ms / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm ' + (s % 60) + 's'; const h = Math.floor(m / 60); return h + 'h ' + (m % 60) + 'm'; }
+    function applyInstanceFilter() { const filter = document.getElementById('instanceStatusFilter')?.value || ''; const filtered = filter ? state.instances.filter(item => item.status === filter) : state.instances; renderInstances(filtered); }
+    function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => { const id = 'inst-' + escapeHtml(item.accountId); return '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">权重/优先级</div><div class="v">' + escapeHtml(item.weight ?? 100) + ' / ' + escapeHtml(item.priority ?? 100) + '</div>' + '<div class="k">剩余时间</div><div class="v ' + ((item.remaining != null && item.remaining < 300000) ? 'warn' : '') + '">' + escapeHtml(fmtRemaining(item.remaining)) + '</div>' + '<div class="k">创建时间</div><div class="v">' + escapeHtml(fmtDateTime(item.createdAt)) + '</div>' + '<div class="k">过期时间</div><div class="v">' + escapeHtml(fmtDateTime(item.expiresAt)) + '</div>' + '<div class="k">最近使用</div><div class="v">' + escapeHtml(fmtDateTime(item.lastUsedAt)) + '</div>' + '<div class="k">代理延迟</div><div class="v">' + (Number.isFinite(item.lastProxyLatencyMs) ? escapeHtml(item.lastProxyLatencyMs + 'ms') : '-') + '</div>' + '<div class="k">连续失败</div><div class="v ' + ((item.consecutiveFailures || 0) > 0 ? 'bad' : '') + '">' + escapeHtml(item.consecutiveFailures || 0) + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(fmtDateTime(item.lastDeployAt)) + '</div>' + '<div class="k">销毁时间</div><div class="v">' + escapeHtml(fmtDateTime(item.destroyedAt)) + '</div>' + '</div>' + '<span class="card-toggle" data-toggle-card="' + id + '">' + (state.expandedCards.has(id) ? '收起 ▴' : '展开详情 ▾') + '</span>' + '<div class="card-extra ' + (state.expandedCards.has(id) ? 'expanded' : '') + '" id="' + id + '">' + '<div class="kv">' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(fmtDateTime(item.lastVerifiedAt)) + '</div>' + '<div class="k">上游状态</div><div class="v">' + escapeHtml(item.lastUpstreamStatus || '-') + '</div>' + '<div class="k">上游错误</div><div class="v">' + escapeHtml(item.lastUpstreamError || '-') + '</div>' + '<div class="k">代理错误</div><div class="v">' + escapeHtml(item.lastProxyError || '-') + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.status || step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + '</div>' + actionButtons(item.accountId, item.status) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>'; }).join(''); }
     function toggleCard(id) { const el = document.getElementById(id); if (!el) return; el.classList.toggle('expanded'); if (el.classList.contains('expanded')) state.expandedCards.add(id); else state.expandedCards.delete(id); const toggle = el.previousElementSibling; if (toggle) toggle.textContent = el.classList.contains('expanded') ? '收起 ▴' : '展开详情 ▾'; }
-    function renderAccounts(accounts) { const body = document.getElementById('accountsBody'); if (!accounts.length) { body.innerHTML = '<tr><td colspan="8" class="empty">未找到账号配置</td></tr>'; return; } body.innerHTML = accounts.map(item => '<tr>' + '<td class="mono">' + escapeHtml(item.id) + '</td>' + '<td>' + escapeHtml(item.name) + '</td>' + '<td>' + escapeHtml(item.enabled ? '是' : '否') + '</td>' + '<td>' + escapeHtml(item.priority) + '</td>' + '<td>' + escapeHtml(item.weight ?? 100) + '</td>' + '<td>' + escapeHtml((item.tags || []).join(', ') || '-') + '</td>' + '<td>' + escapeHtml(item.hasCookie ? '已配置' : (item.hasCookieFile ? 'cookieFile' : '缺失')) + '</td>' + '<td><div class="action-row"><button class="btn" data-edit-account="' + escapeHtml(item.id) + '">编辑</button><button class="btn" data-delete-account="' + escapeHtml(item.id) + '">删除</button></div></td>' + '</tr>').join(''); }
+    function renderAccounts(accounts, instances) { const body = document.getElementById('accountsBody'); if (!accounts.length) { body.innerHTML = '<tr><td colspan="9" class="empty">未找到账号配置</td></tr>'; return; } body.innerHTML = accounts.map(item => { const inst = instances ? instances[item.id] : null; const instStatus = inst ? inst.status : '-'; return '<tr>' + '<td class="mono">' + escapeHtml(item.id) + '</td>' + '<td>' + escapeHtml(item.name) + '</td>' + '<td>' + statusPill(instStatus) + '</td>' + '<td>' + escapeHtml(item.enabled ? '是' : '否') + '</td>' + '<td>' + escapeHtml(item.priority) + '</td>' + '<td>' + escapeHtml(item.weight ?? 100) + '</td>' + '<td>' + escapeHtml((item.tags || []).join(', ') || '-') + '</td>' + '<td>' + escapeHtml(item.hasCookie ? '已配置' : (item.hasCookieFile ? 'cookieFile' : '缺失')) + '</td>' + '<td><div class="action-row"><button class="btn" data-edit-account="' + escapeHtml(item.id) + '">编辑</button><button class="btn" data-delete-account="' + escapeHtml(item.id) + '">删除</button></div></td>' + '</tr>'; }).join(''); }
     function renderAudit(entries) { const body = document.getElementById('auditBody'); if (!body) return; if (!entries.length) { body.innerHTML = '<tr><td colspan="5" class="empty">暂无审计记录</td></tr>'; return; } body.innerHTML = entries.map(e => '<tr>' + '<td class="mono" style="font-size:12px">' + escapeHtml(e.at) + '</td>' + '<td>' + escapeHtml(e.action) + '</td>' + '<td class="mono">' + escapeHtml(e.target) + '</td>' + '<td>' + escapeHtml(e.detail) + '</td>' + '<td>' + (e.ok ? '<span class="pill ok">成功</span>' : '<span class="pill bad">失败</span>') + '</td>' + '</tr>').join(''); }
     function bindTabs() { document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.tab').forEach(t => t.classList.remove('active')); document.querySelectorAll('.panel').forEach(p => p.classList.remove('active')); tab.classList.add('active'); document.querySelector('[data-panel="' + tab.dataset.tab + '"]').classList.add('active'); state.activeTab = tab.dataset.tab; if (tab.dataset.tab === 'audit') { refreshAudit().catch(showError); } })); }
     function bindRefresh() { const select = document.getElementById('refreshMs'); const applyTimer = () => { if (state.timer) clearInterval(state.timer); const ms = Number(select.value || 0); if (ms > 0) state.timer = setInterval(() => refresh().catch(showError), ms); }; select.addEventListener('change', applyTimer); applyTimer(); document.getElementById('refreshBtn').addEventListener('click', async () => { const btn = document.getElementById('refreshBtn'); await withLoading(btn, async () => { await refresh(); showToast('已刷新'); }); }); }
@@ -334,6 +386,7 @@ export function renderAdminPage() {
       document.getElementById('accountWeightInput').value = Number.isFinite(Number(initial.weight)) ? Math.max(0, Math.round(Number(initial.weight))) : 100;
       document.getElementById('accountTagsInput').value = Array.isArray(initial.tags) ? initial.tags.join(', ') : (initial.tags || '');
       document.getElementById('accountCookieInput').value = '';
+      document.getElementById('accountMetaInput').value = initial.meta ? JSON.stringify(initial.meta, null, 2) : '';
       document.getElementById('accountCookieHint').textContent = mode === 'create'
         ? '新增账号时必须填写 Cookie。'
         : '编辑账号时可留空，表示保持原值不变；填写则会覆盖旧 Cookie。';
@@ -348,6 +401,11 @@ export function renderAdminPage() {
       document.getElementById('accountOriginalId').value = '';
     }
     function collectAccountFormPayload() {
+      const metaStr = document.getElementById('accountMetaInput').value.trim();
+      let meta = undefined;
+      if (metaStr) {
+        try { meta = JSON.parse(metaStr); } catch { meta = undefined; }
+      }
       return {
         id: document.getElementById('accountIdInput').value.trim(),
         name: document.getElementById('accountNameInput').value.trim(),
@@ -356,12 +414,13 @@ export function renderAdminPage() {
         weight: Number(document.getElementById('accountWeightInput').value || 100),
         tags: document.getElementById('accountTagsInput').value.trim(),
         cookie: document.getElementById('accountCookieInput').value.trim(),
+        meta,
       };
     }
 
     function showToast(msg, type = 'ok') { const c = document.getElementById('toastContainer'); const el = document.createElement('div'); el.className = 'toast ' + type; el.textContent = msg; c.appendChild(el); requestAnimationFrame(() => el.classList.add('show')); setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000); }
     async function withLoading(btn, fn) { if (!btn || btn.disabled) return; const orig = btn.textContent; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>' + escapeHtml(orig); try { return await fn(); } catch (error) { showError(error); throw error; } finally { btn.disabled = false; btn.textContent = orig; } }
-    async function refreshAudit() { const res = await fetch('/admin/api/audit?limit=100', { cache: 'no-store' }); const data = await res.json(); renderAudit(data.entries || []); }
+    async function refreshAudit() { const actionFilter = document.getElementById('auditActionFilter')?.value || ''; const resultFilter = document.getElementById('auditResultFilter')?.value || ''; const params = new URLSearchParams({ limit: '100' }); if (actionFilter) params.set('action', actionFilter); if (resultFilter === 'ok') params.set('ok', 'true'); if (resultFilter === 'fail') params.set('ok', 'false'); const res = await fetch('/admin/api/audit?' + params.toString(), { cache: 'no-store' }); const data = await res.json(); renderAudit(data.entries || []); }
     function bindActions() {
       document.getElementById('copyBtn').addEventListener('click', async () => { const btn = document.getElementById('copyBtn'); await withLoading(btn, async () => { try { const text = document.getElementById('accessUrl').textContent || ''; await navigator.clipboard.writeText(text); showToast('已复制接入地址'); } catch (error) { showError(error); } }); });
       document.getElementById('newAccountBtn').addEventListener('click', () => openAccountModal('create', { enabled: true, priority: 100, weight: 100, tags: [] }));
@@ -397,6 +456,10 @@ export function renderAdminPage() {
       document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-edit-account]'); if (!button) return; const accountId = button.dataset.editAccount; const account = state.accounts.find(item => item.id === accountId); if (!account) return showToast('未找到账号 ' + accountId, 'bad'); openAccountModal('edit', account); });
       document.body.addEventListener('click', async (event) => { const button = event.target.closest('button[data-delete-account]'); if (!button) return; const account = button.dataset.deleteAccount; if (!account || !confirm('确认删除账号 ' + account + '？此操作会写回 accounts.json 并重载 Manager。')) return; await withLoading(button, async () => { const res = await fetch('/admin/api/accounts/' + encodeURIComponent(account), { method: 'DELETE' }); const text = await res.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; } if (!res.ok) throw new Error(data?.message || ('HTTP ' + res.status)); showToast(data.message || '账号已删除'); await refresh(); }); });
       document.getElementById('refreshAuditBtn').addEventListener('click', async () => { const btn = document.getElementById('refreshAuditBtn'); await withLoading(btn, async () => { await refreshAudit(); showToast('审计日志已刷新'); }); });
+      document.getElementById('instanceStatusFilter').addEventListener('change', () => applyInstanceFilter());
+      document.getElementById('accountEnabledFilter').addEventListener('change', () => { const filter = document.getElementById('accountEnabledFilter')?.value || ''; const instances = window.__lastInstances || {}; if (filter === 'enabled') { renderAccounts(state.accounts.filter(a => a.enabled), instances); } else if (filter === 'disabled') { renderAccounts(state.accounts.filter(a => !a.enabled), instances); } else { renderAccounts(state.accounts, instances); } });
+      document.getElementById('auditActionFilter').addEventListener('change', () => refreshAudit().catch(showError));
+      document.getElementById('auditResultFilter').addEventListener('change', () => refreshAudit().catch(showError));
       document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAccountModal(); });
     }
     function showError(error) { console.error(error); showToast(error?.message || String(error), 'bad'); }

@@ -66,14 +66,8 @@ export class Registry {
         return false;
       });
 
-    const filtered = model
-      ? list.filter(s => {
-          const models = Array.isArray(s.models) ? s.models : [];
-          return models.length === 0 || models.includes(model);
-        })
-      : list;
-
-    return filtered.sort((a, b) => {
+    // model filtering: instances don't carry model info, so pass all upstreams through
+    return list.sort((a, b) => {
       const pa = Number.isFinite(a.priority) ? a.priority : 100;
       const pb = Number.isFinite(b.priority) ? b.priority : 100;
       if (pa !== pb) return pa - pb;

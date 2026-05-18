@@ -60,8 +60,11 @@ export function buildAgents(registry) {
 }
 
 export function buildInstances(registry) {
+  const now = Date.now();
   const result = {};
   for (const [accountId, state] of registry.getAllInstances()) {
+    const expiresAt = state?.expiresAt || null;
+    const remaining = expiresAt ? Math.max(0, expiresAt - now) : null;
     result[accountId] = {
       accountId,
       status: state?.status || 'NONE',
@@ -83,6 +86,21 @@ export function buildInstances(registry) {
       deployCount: state?.deployCount || 0,
       createdAt: state?.createdAt || null,
       destroyedAt: state?.destroyedAt || null,
+      // 路由运营字段（registry 已有，之前未返回）
+      weight: Number.isFinite(state?.weight) ? state.weight : 100,
+      priority: Number.isFinite(state?.priority) ? state.priority : 100,
+      lastUsedAt: state?.lastUsedAt || null,
+      lastProxyLatencyMs: Number.isFinite(state?.lastProxyLatencyMs) ? state.lastProxyLatencyMs : null,
+      consecutiveFailures: state?.consecutiveFailures || 0,
+      lastHealthErrorAt: state?.lastHealthErrorAt || null,
+      lastUpstreamStatus: state?.lastUpstreamStatus || null,
+      lastUpstreamError: state?.lastUpstreamError || null,
+      lastProxyError: state?.lastProxyError || null,
+      // 过期时间（从 worker.instance 同步到 registry）
+      expiresAt,
+      remaining,
+      confirmationSource: state?.confirmationSource || null,
+      responseText: state?.responseText || null,
     };
   }
   return result;
@@ -107,6 +125,7 @@ export function loadAccountsSummary() {
         hasCookie: typeof item?.cookie === 'string' && item.cookie.trim().length > 0,
         hasCookieFile: typeof item?.cookieFile === 'string' && item.cookieFile.trim().length > 0,
         weight: Number.isFinite(Number(item?.weight)) ? Math.max(0, Math.round(Number(item.weight))) : 100,
+        meta: item?.meta || null,
       })),
     };
   } catch (error) {
