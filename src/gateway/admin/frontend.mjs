@@ -364,9 +364,80 @@ export function renderAdminPage() {
         ])
       ].join('');
     }
+    function truncate(s, n) { if (!s) return ''; return s.length > n ? s.slice(0, n) + '…' : s; }
     function fmtRemaining(ms) { if (!Number.isFinite(ms) || ms <= 0) return '-'; const s = Math.floor(ms / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm ' + (s % 60) + 's'; const h = Math.floor(m / 60); return h + 'h ' + (m % 60) + 'm'; }
+    function renderTimeline(timeline) { if (!timeline || !timeline.length) return '-'; return timeline.map(step => { const stage = step?.stage || '?'; const status = step?.status || step?.stageStatus || '?'; const src = step?.confirmationSource || ''; const cls = status === 'ok' ? 'ok' : status === 'failed' ? 'bad' : 'warn'; return '<span class="pill ' + cls + '" style="font-size:11px;margin:1px 2px">' + escapeHtml(stage) + ':' + escapeHtml(status) + (src ? ' (' + escapeHtml(truncate(src, 12)) + ')' : '') + '</span>'; }).join(' '); }
     function applyInstanceFilter() { const filter = document.getElementById('instanceStatusFilter')?.value || ''; const filtered = filter ? state.instances.filter(item => item.status === filter) : state.instances; renderInstances(filtered); }
-    function renderInstances(instances) { const root = document.getElementById('instancesGrid'); if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; } root.innerHTML = instances.map(item => { const id = 'inst-' + escapeHtml(item.accountId); return '<div class="card">' + '<h3>' + escapeHtml(item.accountId) + '</h3>' + '<div class="sub">' + statusPill(item.status) + '</div>' + '<div class="kv">' + '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' + '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' + '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' + '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' + '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' + '<div class="k">权重/优先级</div><div class="v">' + escapeHtml(item.weight ?? 100) + ' / ' + escapeHtml(item.priority ?? 100) + '</div>' + '<div class="k">剩余时间</div><div class="v ' + ((item.remaining != null && item.remaining < 300000) ? 'warn' : '') + '">' + escapeHtml(fmtRemaining(item.remaining)) + '</div>' + '<div class="k">创建时间</div><div class="v">' + escapeHtml(fmtDateTime(item.createdAt)) + '</div>' + '<div class="k">过期时间</div><div class="v">' + escapeHtml(fmtDateTime(item.expiresAt)) + '</div>' + '<div class="k">最近使用</div><div class="v">' + escapeHtml(fmtDateTime(item.lastUsedAt)) + '</div>' + '<div class="k">代理延迟</div><div class="v">' + (Number.isFinite(item.lastProxyLatencyMs) ? escapeHtml(item.lastProxyLatencyMs + 'ms') : '-') + '</div>' + '<div class="k">连续失败</div><div class="v ' + ((item.consecutiveFailures || 0) > 0 ? 'bad' : '') + '">' + escapeHtml(item.consecutiveFailures || 0) + '</div>' + '<div class="k">最后部署</div><div class="v">' + escapeHtml(fmtDateTime(item.lastDeployAt)) + '</div>' + '<div class="k">销毁时间</div><div class="v">' + escapeHtml(fmtDateTime(item.destroyedAt)) + '</div>' + '</div>' + '<span class="card-toggle" data-toggle-card="' + id + '">' + (state.expandedCards.has(id) ? '收起 ▴' : '展开详情 ▾') + '</span>' + '<div class="card-extra ' + (state.expandedCards.has(id) ? 'expanded' : '') + '" id="' + id + '">' + '<div class="kv">' + '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' + '<div class="k">失败类型</div><div class="v">' + escapeHtml(item.failureType || '-') + '</div>' + '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' + '<div class="k">最后验证</div><div class="v">' + escapeHtml(fmtDateTime(item.lastVerifiedAt)) + '</div>' + '<div class="k">上游状态</div><div class="v">' + escapeHtml(item.lastUpstreamStatus || '-') + '</div>' + '<div class="k">上游错误</div><div class="v">' + escapeHtml(item.lastUpstreamError || '-') + '</div>' + '<div class="k">代理错误</div><div class="v">' + escapeHtml(item.lastProxyError || '-') + '</div>' + '<div class="k">阶段轨迹</div><div class="v mono">' + escapeHtml((item.deployTimeline || []).map(step => [step?.stage || '?', step?.status || step?.stageStatus || '?', step?.confirmationSource || '-'].join(':')).join(' | ') || '-') + '</div>' + '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(item.responseText || '-') + '</div>' + '<div class="k">部署错误</div><div class="v">' + escapeHtml(item.lastDeployError || '-') + '</div>' + '<div class="k">健康错误</div><div class="v">' + escapeHtml(item.lastHealthError || '-') + '</div>' + '</div>' + '</div>' + actionButtons(item.accountId, item.status) + '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>'; }).join(''); }
+    function renderInstances(instances) {
+      const root = document.getElementById('instancesGrid');
+      if (!instances.length) { root.innerHTML = '<div class="card empty">当前还没有实例状态记录</div>'; return; }
+      root.innerHTML = instances.map(item => {
+        const id = 'inst-' + escapeHtml(item.accountId);
+        const expanded = state.expandedCards.has(id);
+        const isFailed = item.status === 'FAILED';
+        const isDestroyed = item.status === 'DESTROYED';
+        const remainingWarn = item.remaining != null && item.remaining < 300000;
+
+        // ── 默认视图 ──
+        let html = '<div class="card">' +
+          '<h3>' + escapeHtml(item.accountId) + '</h3>' +
+          '<div class="sub">' + statusPill(item.status) + '</div>' +
+          '<div class="kv">' +
+            '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' +
+            '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' +
+            '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' +
+            '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' +
+            '<div class="k">权重/优先级</div><div class="v">' + escapeHtml(item.weight ?? 100) + ' / ' + escapeHtml(item.priority ?? 100) + '</div>' +
+            // ── 沙箱生命周期 ──
+            '<div class="k">创建时间</div><div class="v">' + escapeHtml(fmtDateTime(item.createdAt)) + '</div>' +
+            '<div class="k">预计销毁</div><div class="v">' + escapeHtml(fmtDateTime(item.expiresAt)) + '</div>' +
+            '<div class="k">剩余时间</div><div class="v ' + (remainingWarn ? 'warn' : '') + '">' + escapeHtml(fmtRemaining(item.remaining)) + '</div>' +
+            // ── 运营信息 ──
+            '<div class="k">最近使用</div><div class="v">' + escapeHtml(fmtDateTime(item.lastUsedAt)) + '</div>' +
+            '<div class="k">代理延迟</div><div class="v">' + (Number.isFinite(item.lastProxyLatencyMs) ? escapeHtml(item.lastProxyLatencyMs + 'ms') : '-') + '</div>' +
+            '<div class="k">连续失败</div><div class="v ' + ((item.consecutiveFailures || 0) > 0 ? 'bad' : '') + '">' + escapeHtml(item.consecutiveFailures || 0) + '</div>' +
+            '<div class="k">最后部署</div><div class="v">' + escapeHtml(fmtDateTime(item.lastDeployAt)) + '</div>' +
+          '</div>';
+
+        // ── 失败时突出显示 ──
+        if (isFailed) {
+          html += '<div class="kv" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">' +
+            (item.failureType ? '<div class="k">失败类型</div><div class="v bad">' + escapeHtml(item.failureType) + '</div>' : '') +
+            (item.lastDeployError ? '<div class="k">部署错误</div><div class="v bad">' + escapeHtml(truncate(item.lastDeployError, 80)) + '</div>' : '') +
+            (item.lastHealthError ? '<div class="k">健康错误</div><div class="v bad">' + escapeHtml(truncate(item.lastHealthError, 80)) + '</div>' : '') +
+            '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' +
+          '</div>';
+        }
+
+        // ── DESTROYED 显示销毁时间 ──
+        if (isDestroyed && item.destroyedAt) {
+          html += '<div class="kv" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">' +
+            '<div class="k">销毁时间</div><div class="v">' + escapeHtml(fmtDateTime(item.destroyedAt)) + '</div>' +
+          '</div>';
+        }
+
+        // ── 展开/收起 ──
+        html += '<span class="card-toggle" data-toggle-card="' + id + '">' +
+          (expanded ? '收起 ▴' : '展开详情 ▾') + '</span>' +
+          '<div class="card-extra ' + (expanded ? 'expanded' : '') + '" id="' + id + '">' +
+          '<div class="kv">' +
+            // 阶段轨迹（pill 样式）
+            '<div class="k">阶段轨迹</div><div class="v">' + renderTimeline(item.deployTimeline) + '</div>' +
+            '<div class="k">最后验证</div><div class="v">' + escapeHtml(fmtDateTime(item.lastVerifiedAt)) + '</div>' +
+            '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' +
+            '<div class="k">部署次数</div><div class="v">' + escapeHtml(item.deployCount || 0) + '</div>' +
+            '<div class="k">最近响应</div><div class="v mono">' + escapeHtml(truncate(item.responseText, 120) || '-') + '</div>' +
+            '<div class="k">上游状态</div><div class="v">' + escapeHtml(item.lastUpstreamStatus || '-') + '</div>' +
+            '<div class="k">上游错误</div><div class="v">' + escapeHtml(truncate(item.lastUpstreamError, 120) || '-') + '</div>' +
+            '<div class="k">代理错误</div><div class="v">' + escapeHtml(truncate(item.lastProxyError, 120) || '-') + '</div>' +
+            '<div class="k">部署错误</div><div class="v">' + escapeHtml(truncate(item.lastDeployError, 120) || '-') + '</div>' +
+            '<div class="k">健康错误</div><div class="v">' + escapeHtml(truncate(item.lastHealthError, 120) || '-') + '</div>' +
+          '</div></div>' +
+        '</div>' + actionButtons(item.accountId, item.status) +
+        '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>';
+        return html;
+      }).join('');
+    }
     function toggleCard(id) { const el = document.getElementById(id); if (!el) return; el.classList.toggle('expanded'); if (el.classList.contains('expanded')) state.expandedCards.add(id); else state.expandedCards.delete(id); const toggle = el.previousElementSibling; if (toggle) toggle.textContent = el.classList.contains('expanded') ? '收起 ▴' : '展开详情 ▾'; }
     function renderAccounts(accounts, instances) { const body = document.getElementById('accountsBody'); if (!accounts.length) { body.innerHTML = '<tr><td colspan="9" class="empty">未找到账号配置</td></tr>'; return; } body.innerHTML = accounts.map(item => { const inst = instances ? instances[item.id] : null; const instStatus = inst ? inst.status : '-'; return '<tr>' + '<td class="mono">' + escapeHtml(item.id) + '</td>' + '<td>' + escapeHtml(item.name) + '</td>' + '<td>' + statusPill(instStatus) + '</td>' + '<td>' + escapeHtml(item.enabled ? '是' : '否') + '</td>' + '<td>' + escapeHtml(item.priority) + '</td>' + '<td>' + escapeHtml(item.weight ?? 100) + '</td>' + '<td>' + escapeHtml((item.tags || []).join(', ') || '-') + '</td>' + '<td>' + escapeHtml(item.hasCookie ? '已配置' : (item.hasCookieFile ? 'cookieFile' : '缺失')) + '</td>' + '<td><div class="action-row"><button class="btn" data-edit-account="' + escapeHtml(item.id) + '">编辑</button><button class="btn" data-delete-account="' + escapeHtml(item.id) + '">删除</button></div></td>' + '</tr>'; }).join(''); }
     function renderAudit(entries) { const body = document.getElementById('auditBody'); if (!body) return; if (!entries.length) { body.innerHTML = '<tr><td colspan="5" class="empty">暂无审计记录</td></tr>'; return; } body.innerHTML = entries.map(e => '<tr>' + '<td class="mono" style="font-size:12px">' + escapeHtml(e.at) + '</td>' + '<td>' + escapeHtml(e.action) + '</td>' + '<td class="mono">' + escapeHtml(e.target) + '</td>' + '<td>' + escapeHtml(e.detail) + '</td>' + '<td>' + (e.ok ? '<span class="pill ok">成功</span>' : '<span class="pill bad">失败</span>') + '</td>' + '</tr>').join(''); }
