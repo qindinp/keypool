@@ -308,6 +308,23 @@ export function createGateway(config) {
           headers: { 'content-type': 'application/json', ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
           body: openaiBody,
         }, { timeoutMs: getMimoTunnelTimeoutMs(openaiBody, model) });
+
+        const status = tunnelResp.status || 200;
+        if (status >= 400) {
+          registry.markProxyUpstreamError(upstream.accountId, status, tunnelResp.body);
+          const errBody = tunnelResp.body || '';
+          let errMessage;
+          try {
+            const parsed = JSON.parse(errBody);
+            errMessage = parsed.error?.message || parsed.message || errBody;
+          } catch {
+            errMessage = errBody || `upstream returned HTTP ${status}`;
+          }
+          res.writeHead(status, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `API Error: ${status} ${errMessage}` } }));
+          return;
+        }
+
         const oaiResp = JSON.parse(tunnelResp.body || '{}');
         const anthropicResp = openAIToAnthropic(oaiResp, model);
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -362,7 +379,21 @@ export function createGateway(config) {
         transformer.flush();
         res.end();
       } else {
-        const oaiResp = await response.json();
+        const errBody = await response.text();
+        if (response.status >= 400) {
+          registry.markProxyUpstreamError(upstream.accountId, response.status, errBody);
+          let errMessage;
+          try {
+            const parsed = JSON.parse(errBody);
+            errMessage = parsed.error?.message || parsed.message || errBody;
+          } catch {
+            errMessage = errBody || `upstream returned HTTP ${response.status}`;
+          }
+          res.writeHead(response.status, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `API Error: ${response.status} ${errMessage}` } }));
+          return;
+        }
+        const oaiResp = JSON.parse(errBody || '{}');
         const anthropicResp = openAIToAnthropic(oaiResp, model);
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify(anthropicResp));
