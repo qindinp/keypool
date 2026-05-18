@@ -88,9 +88,23 @@ export function renderAdminPage() {
     .api-drawer summary { cursor: pointer; color: var(--soft); }
     .meta-links { margin-top: 12px; }
     .meta-links a { padding: 6px 9px; border-radius: 999px; background: rgba(102,163,255,.09); }
-    .action-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
     .action-row .btn { padding: 6px 10px; font-size: 12px; }
-    .status-line { margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .action-row .btn.primary-action { background: linear-gradient(135deg, rgba(102,163,255,.32), rgba(125,211,252,.14)); border-color: rgba(102,163,255,.5); }
+    .action-group { display: inline-flex; gap: 6px; }
+    .action-group + .action-group { margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--border); }
+    .inst-card { background: rgba(18,26,43,.9); border: 1px solid var(--border); border-radius: 16px; padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+    .inst-card.is-failed { border-color: rgba(248,113,113,.35); }
+    .inst-card.is-destroyed { opacity: .7; }
+    .inst-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 0; }
+    .inst-head h3 { margin: 0; font-size: 15px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .inst-countdown { font-size: 18px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .inst-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 8px 16px 0; font-size: 12px; color: var(--muted); }
+    .inst-meta span { white-space: nowrap; }
+    .inst-meta .sep { opacity: .4; }
+    .inst-alert { margin: 10px 16px 0; padding: 8px 12px; border-radius: 10px; background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.25); font-size: 12px; color: var(--bad); line-height: 1.4; }
+    .inst-actions { padding: 12px 16px; margin-top: auto; border-top: 1px solid var(--border); }
+    .inst-footer { padding: 0 16px 12px; }
     .modal-backdrop { position: fixed; inset: 0; background: rgba(4, 8, 18, 0.72); display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
     .modal-backdrop.open { display: flex; }
     .modal { width: min(680px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
@@ -315,7 +329,52 @@ export function renderAdminPage() {
     function statusPill(status) { const cls = ['ACTIVE','READY'].includes(status) ? 'ok' : ['FAILED','DESTROYED'].includes(status) ? 'bad' : 'warn'; return '<span class="pill ' + cls + '">' + escapeHtml(status || 'NONE') + '</span>'; }
     function metricCard(label, value, cls = '') { return '<div class="metric ' + cls + '"><div class="label">' + escapeHtml(label) + '</div><div class="value ' + cls + '">' + escapeHtml(value) + '</div></div>'; }
     function metricGroup(title, subtitle, cards) { return '<section class="metric-group"><div class="metric-group-head"><h2>' + escapeHtml(title) + '</h2><span class="metric-group-sub">' + escapeHtml(subtitle) + '</span></div><div class="metric-grid">' + cards.join('') + '</div></section>'; }
-    function actionButtons(accountId, status) { const isPaused = status === 'PAUSED'; const isStopped = status === 'MANUAL_STOPPED'; const isFailed = status === 'FAILED'; const isDestroyed = status === 'DESTROYED'; const isActive = status === 'ACTIVE'; return '<div class="action-row">' + '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">部署</button>' + '<button class="btn" data-action="recover" data-account="' + escapeHtml(accountId) + '">恢复</button>' + (isActive ? '<button class="btn" data-action="pause" data-account="' + escapeHtml(accountId) + '">暂停</button>' : '') + (isPaused ? '<button class="btn" data-action="deploy" data-account="' + escapeHtml(accountId) + '">恢复部署</button>' : '') + '<button class="btn" data-action="renew" data-account="' + escapeHtml(accountId) + '">续期</button>' + '<button class="btn bad-btn" data-action="destroy" data-account="' + escapeHtml(accountId) + '">销毁</button>' + '<button class="btn" data-action="stop" data-account="' + escapeHtml(accountId) + '">停止</button>' + '</div>'; }
+    function actionButtons(accountId, status) {
+      const a = escapeHtml(accountId);
+      const btn = (action, label, cls) => '<button class="btn ' + cls + '" data-action="' + action + '" data-account="' + a + '">' + label + '</button>';
+
+      let primary = '';
+      let danger = '';
+
+      switch (status) {
+        case 'ACTIVE':
+          primary = btn('renew', '续期', 'primary-action') + btn('pause', '暂停', '');
+          danger = btn('destroy', '销毁', 'bad-btn') + btn('stop', '停止', 'bad-btn');
+          break;
+        case 'PAUSED':
+          primary = btn('deploy', '恢复部署', 'primary-action');
+          danger = btn('destroy', '销毁', 'bad-btn') + btn('stop', '停止', 'bad-btn');
+          break;
+        case 'FAILED':
+          primary = btn('recover', '恢复', 'primary-action') + btn('deploy', '重新部署', '');
+          danger = btn('destroy', '销毁', 'bad-btn') + btn('stop', '停止', 'bad-btn');
+          break;
+        case 'READY':
+        case 'DEPLOYED_UNVERIFIED':
+          primary = btn('recover', '恢复', 'primary-action') + btn('renew', '续期', '');
+          danger = btn('destroy', '销毁', 'bad-btn') + btn('stop', '停止', 'bad-btn');
+          break;
+        case 'CREATING':
+        case 'DEPLOYING':
+        case 'RECOVERING':
+          danger = btn('stop', '停止', 'bad-btn');
+          break;
+        case 'MANUAL_STOPPED':
+          primary = btn('deploy', '部署', 'primary-action');
+          danger = btn('destroy', '销毁', 'bad-btn');
+          break;
+        case 'DESTROYED':
+          primary = btn('deploy', '部署', 'primary-action');
+          danger = btn('stop', '停止', 'bad-btn');
+          break;
+        default:
+          primary = btn('deploy', '部署', 'primary-action') + btn('recover', '恢复', '');
+          danger = btn('destroy', '销毁', 'bad-btn') + btn('stop', '停止', 'bad-btn');
+      }
+
+      const group = (content, cls) => '<span class="action-group">' + content + '</span>';
+      return '<div class="action-row">' + (primary ? group(primary) : '') + (danger ? group(danger) : '') + '</div>';
+    }
     async function postJson(url) { const resp = await fetch(url, { method: 'POST' }); const text = await resp.text(); let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; } if (!resp.ok) { throw new Error(data?.message || data?.error || ('HTTP ' + resp.status)); } return data; }
     async function refresh() {
       const [overviewRes, instancesRes, accountsRes] = await Promise.allSettled([
@@ -378,50 +437,65 @@ export function renderAdminPage() {
         const isDestroyed = item.status === 'DESTROYED';
         const remainingWarn = item.remaining != null && item.remaining < 300000;
 
-        // ── 默认视图 ──
-        let html = '<div class="card">' +
+        // ── 卡片容器 ──
+        let cls = 'inst-card';
+        if (isFailed) cls += ' is-failed';
+        if (isDestroyed) cls += ' is-destroyed';
+        let html = '<div class="' + cls + '">';
+
+        // ── 头部：名称 + 状态 + 倒计时 ──
+        html += '<div class="inst-head">' +
           '<h3>' + escapeHtml(item.accountId) + '</h3>' +
-          '<div class="sub">' + statusPill(item.status) + '</div>' +
+          statusPill(item.status) +
+          '<span class="inst-countdown' + (remainingWarn ? ' warn' : '') + '">' + escapeHtml(fmtRemaining(item.remaining)) + '</span>' +
+        '</div>';
+
+        // ── 元数据行 ──
+        const meta = [];
+        meta.push('权重 ' + escapeHtml(item.weight ?? 100));
+        meta.push('优先级 ' + escapeHtml(item.priority ?? 100));
+        if (item.deployMode) meta.push(escapeHtml(item.deployMode));
+        if (Number.isFinite(item.lastProxyLatencyMs)) meta.push(item.lastProxyLatencyMs + 'ms');
+        if (item.deployCount) meta.push('部署 ' + item.deployCount + '次');
+        if (item.lastUsedAt) meta.push('使用 ' + escapeHtml(fmtDateTime(item.lastUsedAt)));
+        html += '<div class="inst-meta">' + meta.join('<span class="sep">·</span>') + '</div>';
+
+        // ── 失败警报 ──
+        if (isFailed) {
+          const parts = [];
+          if (item.failureType) parts.push('<strong>' + escapeHtml(item.failureType) + '</strong>');
+          if (item.lastDeployError) parts.push(escapeHtml(truncate(item.lastDeployError, 100)));
+          if (!parts.length && item.lastHealthError) parts.push(escapeHtml(truncate(item.lastHealthError, 100)));
+          if (parts.length) {
+            html += '<div class="inst-alert">' + parts.join(': ') + '</div>';
+          }
+        }
+
+        // ── DESTROYED 销毁时间 ──
+        if (isDestroyed && item.destroyedAt) {
+          html += '<div class="inst-meta">销毁于 ' + escapeHtml(fmtDateTime(item.destroyedAt)) + '</div>';
+        }
+
+        // ── 操作按钮 ──
+        html += '<div class="inst-actions">' + actionButtons(item.accountId, item.status) + '</div>';
+
+        // ── 可折叠详情 ──
+        html += '<div class="inst-footer">' +
+          '<span class="card-toggle" data-toggle-card="' + id + '">' +
+            (expanded ? '收起 ▴' : '展开详情 ▾') +
+          '</span>' +
+          '<div class="card-extra ' + (expanded ? 'expanded' : '') + '" id="' + id + '">' +
           '<div class="kv">' +
             '<div class="k">部署模式</div><div class="v">' + escapeHtml(item.deployMode || '-') + '</div>' +
             '<div class="k">已验证</div><div class="v">' + escapeHtml(item.verified ? '是' : '否') + '</div>' +
             '<div class="k">Health OK</div><div class="v">' + escapeHtml(item.healthOk ? '是' : '否') + '</div>' +
             '<div class="k">部署阶段</div><div class="v">' + escapeHtml(item.deployStage || '-') + ' / ' + escapeHtml(item.deployStatus || '-') + '</div>' +
-            '<div class="k">权重/优先级</div><div class="v">' + escapeHtml(item.weight ?? 100) + ' / ' + escapeHtml(item.priority ?? 100) + '</div>' +
-            // ── 沙箱生命周期 ──
             '<div class="k">创建时间</div><div class="v">' + escapeHtml(fmtDateTime(item.createdAt)) + '</div>' +
             '<div class="k">预计销毁</div><div class="v">' + escapeHtml(fmtDateTime(item.expiresAt)) + '</div>' +
-            '<div class="k">剩余时间</div><div class="v ' + (remainingWarn ? 'warn' : '') + '">' + escapeHtml(fmtRemaining(item.remaining)) + '</div>' +
-            // ── 运营信息 ──
             '<div class="k">最近使用</div><div class="v">' + escapeHtml(fmtDateTime(item.lastUsedAt)) + '</div>' +
             '<div class="k">代理延迟</div><div class="v">' + (Number.isFinite(item.lastProxyLatencyMs) ? escapeHtml(item.lastProxyLatencyMs + 'ms') : '-') + '</div>' +
             '<div class="k">连续失败</div><div class="v ' + ((item.consecutiveFailures || 0) > 0 ? 'bad' : '') + '">' + escapeHtml(item.consecutiveFailures || 0) + '</div>' +
             '<div class="k">最后部署</div><div class="v">' + escapeHtml(fmtDateTime(item.lastDeployAt)) + '</div>' +
-          '</div>';
-
-        // ── 失败时突出显示 ──
-        if (isFailed) {
-          html += '<div class="kv" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">' +
-            (item.failureType ? '<div class="k">失败类型</div><div class="v bad">' + escapeHtml(item.failureType) + '</div>' : '') +
-            (item.lastDeployError ? '<div class="k">部署错误</div><div class="v bad">' + escapeHtml(truncate(item.lastDeployError, 80)) + '</div>' : '') +
-            (item.lastHealthError ? '<div class="k">健康错误</div><div class="v bad">' + escapeHtml(truncate(item.lastHealthError, 80)) + '</div>' : '') +
-            '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>' +
-          '</div>';
-        }
-
-        // ── DESTROYED 显示销毁时间 ──
-        if (isDestroyed && item.destroyedAt) {
-          html += '<div class="kv" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">' +
-            '<div class="k">销毁时间</div><div class="v">' + escapeHtml(fmtDateTime(item.destroyedAt)) + '</div>' +
-          '</div>';
-        }
-
-        // ── 展开/收起 ──
-        html += '<span class="card-toggle" data-toggle-card="' + id + '">' +
-          (expanded ? '收起 ▴' : '展开详情 ▾') + '</span>' +
-          '<div class="card-extra ' + (expanded ? 'expanded' : '') + '" id="' + id + '">' +
-          '<div class="kv">' +
-            // 阶段轨迹（pill 样式）
             '<div class="k">阶段轨迹</div><div class="v">' + renderTimeline(item.deployTimeline) + '</div>' +
             '<div class="k">最后验证</div><div class="v">' + escapeHtml(fmtDateTime(item.lastVerifiedAt)) + '</div>' +
             '<div class="k">确认来源</div><div class="v">' + escapeHtml(item.confirmationSource || '-') + '</div>' +
@@ -430,11 +504,13 @@ export function renderAdminPage() {
             '<div class="k">上游状态</div><div class="v">' + escapeHtml(item.lastUpstreamStatus || '-') + '</div>' +
             '<div class="k">上游错误</div><div class="v">' + escapeHtml(truncate(item.lastUpstreamError, 120) || '-') + '</div>' +
             '<div class="k">代理错误</div><div class="v">' + escapeHtml(truncate(item.lastProxyError, 120) || '-') + '</div>' +
-            '<div class="k">部署错误</div><div class="v">' + escapeHtml(truncate(item.lastDeployError, 120) || '-') + '</div>' +
-            '<div class="k">健康错误</div><div class="v">' + escapeHtml(truncate(item.lastHealthError, 120) || '-') + '</div>' +
-          '</div></div>' +
-        '</div>' + actionButtons(item.accountId, item.status) +
-        '<div class="status-line">当前状态：' + escapeHtml(item.status || '-') + '</div></div>';
+            (isFailed ? (
+              (item.failureType ? '<div class="k">失败类型</div><div class="v bad">' + escapeHtml(item.failureType) + '</div>' : '') +
+              '<div class="k">可重试</div><div class="v">' + escapeHtml(item.retryable ? '是' : '否') + '</div>'
+            ) : '') +
+          '</div></div></div>';
+
+        html += '</div>';
         return html;
       }).join('');
     }
