@@ -174,6 +174,7 @@ export class Scheduler {
           this.registry.updateInstanceState(worker.account.id, { createdAt: worker.constructor.sandboxCreatedAt(status) });
         } catch (err) {
           console.warn(`⚠️ [${worker.account.id}] 状态检查失败:`, err.message);
+          break;
         }
 
         // 续期检查（用更新后的 expiresAt 实时计算，避免使用 snapshot 的过期值）

@@ -131,7 +131,7 @@ export class AccountWorker {
     };
 
     const currentState = this.registry.getInstanceState(this.account.id) || {};
-    const tunnelAlreadyConnected = !!currentState.tunnel && (!result?.runId || !currentState.tunnelRunId || currentState.tunnelRunId === result.runId);
+    const tunnelAlreadyConnected = !!currentState.tunnel && currentState.tunnel.readyState === 1 && (!result?.runId || !currentState.tunnelRunId || currentState.tunnelRunId === result.runId);
 
     if (result?.verified || tunnelAlreadyConnected) {
       this.setState('ACTIVE', {
@@ -258,7 +258,8 @@ export class AccountWorker {
           this.instance = oldInstance;
           this.setState(oldState || 'ACTIVE', {
             lastDeployError: deployResult.lastError || err.message,
-            verified: oldState === 'ACTIVE',
+            verified: false,
+            healthOk: false,
             deployStage: deployResult.stage || 'unknown',
             deployStatus: deployResult.stageStatus || 'failed',
             retryable: !!deployResult.retryable,
