@@ -110,11 +110,14 @@ export class Scheduler {
           console.warn(`⚠️ [${worker.account.id}] 状态检查失败:`, err.message);
         }
 
-        // 续期检查
-        if (instance && instance.remaining < this.renewBefore) {
-          console.log(`🔄 [${worker.account.id}] 剩余 ${Math.round(instance.remaining / 1000)}s → 续期`);
-          await worker.renew();
-          break;
+        // 续期检查（用 getStatus 更新后的 expiresAt 实时计算）
+        {
+          const freshRemaining = worker.instance?.expiresAt ? worker.instance.expiresAt - Date.now() : Infinity;
+          if (freshRemaining < this.renewBefore) {
+            console.log(`🔄 [${worker.account.id}] 剩余 ${Math.round(freshRemaining / 1000)}s → 续期`);
+            await worker.renew();
+            break;
+          }
         }
 
         // 长时间未验证 → 触发恢复
@@ -144,6 +147,15 @@ export class Scheduler {
           if (instanceState.tunnel.readyState !== 1) { // WebSocket.CLOSED
             console.log(`⚠️ [${worker.account.id}] Tunnel 连接已断开 → 恢复`);
             await worker.recover();
+            break;
+          }
+          // Tunnel 连接正常，但实例可能即将到期 → 续期
+          {
+            const freshRemaining = worker.instance?.expiresAt ? worker.instance.expiresAt - Date.now() : Infinity;
+            if (freshRemaining < this.renewBefore) {
+              console.log(`🔄 [${worker.account.id}] 剩余 ${Math.round(freshRemaining / 1000)}s → 续期 (tunnel)`);
+              await worker.renew();
+            }
           }
           break;
         }
@@ -164,11 +176,14 @@ export class Scheduler {
           console.warn(`⚠️ [${worker.account.id}] 状态检查失败:`, err.message);
         }
 
-        // 续期检查
-        if (instance && instance.remaining < this.renewBefore) {
-          console.log(`🔄 [${worker.account.id}] 剩余 ${Math.round(instance.remaining / 1000)}s → 续期`);
-          await worker.renew();
-          break;
+        // 续期检查（用更新后的 expiresAt 实时计算，避免使用 snapshot 的过期值）
+        {
+          const freshRemaining = worker.instance?.expiresAt ? worker.instance.expiresAt - Date.now() : Infinity;
+          if (freshRemaining < this.renewBefore) {
+            console.log(`🔄 [${worker.account.id}] 剩余 ${Math.round(freshRemaining / 1000)}s → 续期`);
+            await worker.renew();
+            break;
+          }
         }
         break;
 

@@ -316,8 +316,9 @@ test('ACTIVE with low remaining time: triggers renew', async () => {
 
   const worker = makeWorker({
     state: 'ACTIVE',
-    instance: { remaining: 60_000 }, // < 300_000 renewBefore
+    instance: { expiresAt: Date.now() + 60_000 }, // < 300_000 renewBefore
     onRenew: () => { renewed = true; },
+    api: { getStatus: async () => ({ status: 'AVAILABLE', expireTime: Date.now() + 60_000 }) },
   });
   const scheduler = new Scheduler([worker], registry, { checkInterval: 1, renewBefore: 300_000 });
   await scheduler.tick();
@@ -530,8 +531,9 @@ test('READY with low remaining time: triggers renew', async () => {
 
   const worker = makeWorker({
     state: 'READY',
-    instance: { remaining: 30_000 },
+    instance: { expiresAt: Date.now() + 30_000 }, // < 300_000 renewBefore
     onRenew: () => { renewed = true; },
+    api: { getStatus: async () => ({ status: 'AVAILABLE', expireTime: Date.now() + 30_000 }) },
   });
   const scheduler = new Scheduler([worker], registry, { checkInterval: 1, renewBefore: 300_000 });
   await scheduler.tick();
