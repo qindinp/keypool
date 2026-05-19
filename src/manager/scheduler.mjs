@@ -45,13 +45,13 @@ export class Scheduler {
   }
 
   async tick() {
-    for (const worker of this.workers) {
+    await Promise.allSettled(this.workers.map(async (worker) => {
       try {
         await this._tickWorker(worker);
       } catch (err) {
         console.error(`❌ 调度错误 [${worker.account.id}]:`, err.message);
       }
-    }
+    }));
   }
 
   async _tickWorker(worker) {

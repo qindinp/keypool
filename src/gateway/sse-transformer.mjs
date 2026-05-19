@@ -13,14 +13,19 @@ import { openAIChunkToAnthropicEvents } from './adapter.mjs';
  * @returns {{ processChunk: (buf: Buffer) => void, flush: () => void }}
  */
 export function createSSETransformer(state, res) {
-  let lineBuf = '';
+  const bufParts = [];
+  let bufLen = 0;
 
-  function processChunk(buf) {
-    lineBuf += buf.toString();
+  function drainLines() {
+    const combined = Buffer.concat(bufParts).toString('utf8');
+    bufParts.length = 0;
+    bufLen = 0;
+
+    let start = 0;
     let nlIdx;
-    while ((nlIdx = lineBuf.indexOf('\n')) !== -1) {
-      const line = lineBuf.slice(0, nlIdx).trim();
-      lineBuf = lineBuf.slice(nlIdx + 1);
+    while ((nlIdx = combined.indexOf('\n', start)) !== -1) {
+      const line = combined.slice(start, nlIdx).trim();
+      start = nlIdx + 1;
       if (!line.startsWith('data: ')) continue;
       const payload = line.slice(6).trim();
       if (payload === '[DONE]') continue;
@@ -34,14 +39,32 @@ export function createSSETransformer(state, res) {
         console.warn(`⚠️ SSE chunk parse error: ${err.message}`);
       }
     }
+
+    // 保留最后未完成的行
+    if (start < combined.length) {
+      const remaining = Buffer.from(combined.slice(start), 'utf8');
+      bufParts.push(remaining);
+      bufLen += remaining.length;
+    }
+  }
+
+  function processChunk(buf) {
+    bufParts.push(buf);
+    bufLen += buf.length;
+    // 仅当 buffer 包含换行时才尝试切行
+    if (buf.includes(10)) {
+      drainLines();
+    }
   }
 
   function flush() {
-    // 处理 lineBuf 中可能残留的最后一行
-    if (lineBuf.trim()) {
-      const line = lineBuf.trim();
-      if (line.startsWith('data: ')) {
-        const payload = line.slice(6).trim();
+    // 处理残留的最后一行
+    if (bufLen > 0) {
+      const combined = Buffer.concat(bufParts).toString('utf8').trim();
+      bufParts.length = 0;
+      bufLen = 0;
+      if (combined && combined.startsWith('data: ')) {
+        const payload = combined.slice(6).trim();
         if (payload !== '[DONE]') {
           try {
             const oaiChunk = JSON.parse(payload);

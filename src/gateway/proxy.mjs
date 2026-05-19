@@ -142,15 +142,17 @@ export function fixMimoReasoningContent(parsed, model) {
   return null;
 }
 
-export function getMimoTunnelTimeoutMs(body, model) {
+export function getMimoTunnelTimeoutMs(bodyOrParsed, model) {
   if (!model?.startsWith('mimo-')) return 120_000;
   try {
-    const parsed = JSON.parse(body || '{}');
+    const parsed = typeof bodyOrParsed === 'object' && bodyOrParsed !== null
+      ? bodyOrParsed
+      : JSON.parse(bodyOrParsed || '{}');
     const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
     const messageCount = messages.length;
     const toolResultCount = messages.filter((m) => m?.role === 'tool').length;
     const toolCallAssistantCount = messages.filter((m) => m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0).length;
-    const bodyBytes = Buffer.byteLength(body || '', 'utf8');
+    const bodyBytes = typeof bodyOrParsed === 'string' ? Buffer.byteLength(bodyOrParsed, 'utf8') : Buffer.byteLength(JSON.stringify(bodyOrParsed), 'utf8');
     console.log(`📊 MiMo request summary: bytes=${bodyBytes} messages=${messageCount} toolResults=${toolResultCount} toolCallAssistants=${toolCallAssistantCount} stream=${!!parsed.stream}`);
   } catch {}
   return 600_000;
@@ -165,7 +167,7 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB — proxy 路径需转发完整
  */
 export function readBody(req) {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks = [];
     let bytes = 0;
     req.on('data', (c) => {
       bytes += c.length;
@@ -174,9 +176,9 @@ export function readBody(req) {
         reject(new Error(`Request body exceeds ${MAX_BODY_BYTES / (1024 * 1024)}MB limit`));
         return;
       }
-      body += c;
+      chunks.push(c);
     });
-    req.on('end', () => resolve(body));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
 }
@@ -299,52 +301,6 @@ function createToolCallDiagnostics(body, model, requestId) {
   }
 }
 
-function installToolCallDiagnostics(res, diag) {
-  if (!diag || res.__keypoolToolDiagInstalled) return;
-  res.__keypoolToolDiagInstalled = true;
-
-  const originalWrite = res.write.bind(res);
-  res.write = (chunk, ...args) => {
-    try {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-      diag.chunks += 1;
-      diag.bytes += buf.length;
-      if (diag.firstChunkMs === null) diag.firstChunkMs = Date.now();
-
-      const text = buf.toString('utf8');
-      if (text.includes('tool_calls')) diag.sawToolCalls = true;
-      if (text.includes('finish_reason') && text.includes('tool_calls')) diag.sawFinishToolCalls = true;
-      if (text.includes('[DONE]')) diag.sawDone = true;
-    } catch {}
-    return originalWrite(chunk, ...args);
-  };
-
-  const originalEnd = res.end.bind(res);
-  res.end = (chunk, ...args) => {
-    if (chunk) {
-      try {
-        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-        diag.bytes += buf.length;
-        const text = buf.toString('utf8');
-        if (text.includes('tool_calls')) diag.sawToolCalls = true;
-        if (text.includes('finish_reason') && text.includes('tool_calls')) diag.sawFinishToolCalls = true;
-        if (text.includes('[DONE]')) diag.sawDone = true;
-      } catch {}
-    }
-
-    if (!diag.loggedEnd) {
-      diag.loggedEnd = true;
-      console.log(`🧰 MiMo tool diag end requestId=${diag.requestId} model=${diag.model} stream=${diag.stream} chunks=${diag.chunks} bytes=${diag.bytes} durationMs=${Date.now() - diag.startMs} firstChunkMs=${diag.firstChunkMs ? diag.firstChunkMs - diag.startMs : 'none'} sawToolCalls=${diag.sawToolCalls} sawFinishToolCalls=${diag.sawFinishToolCalls} sawDone=${diag.sawDone}`);
-    }
-    return originalEnd(chunk, ...args);
-  };
-}
-
-function logToolCallFailure(diag, accountId, err) {
-  if (!diag) return;
-  console.error(`🧰 MiMo tool diag failure requestId=${diag.requestId} accountId=${accountId || '-'} model=${diag.model} stream=${diag.stream} chunks=${diag.chunks} bytes=${diag.bytes} durationMs=${Date.now() - diag.startMs} firstChunkMs=${diag.firstChunkMs ? diag.firstChunkMs - diag.startMs : 'none'} sawToolCalls=${diag.sawToolCalls} sawFinishToolCalls=${diag.sawFinishToolCalls} sawDone=${diag.sawDone} error=${err?.message || err}`);
-}
-
 /**
  * Merge OpenAI streaming usage into finish_reason chunks.
  *
@@ -353,36 +309,60 @@ function logToolCallFailure(diag, accountId, err) {
  * Proxies like CC Switch only look at the finish_reason chunk for usage,
  * so we need to merge the usage into the finish_reason chunk.
  *
- * This function wraps res.write to intercept streaming data and merge
- * usage from the final chunk into the finish_reason chunk.
+ * Also handles tool call diagnostics if diag is provided,
+ * combining both interceptors into a single res.write wrapper.
  */
 const LINEBUF_MAX_BYTES = 1024 * 1024; // 1MB — 防止单行过长导致 OOM
 
-function installStreamingUsageMerger(res) {
+function installStreamingInterceptors(res, diag) {
+  const hasDiag = !!diag;
+  const hasUsageMerger = true; // always install usage merger
+
+  if (hasDiag && res.__keypoolToolDiagInstalled) return;
   if (res.__keypoolUsageMergerInstalled) return;
+
+  if (hasDiag) res.__keypoolToolDiagInstalled = true;
   res.__keypoolUsageMergerInstalled = true;
 
   let lineBuf = '';
-  let pendingFinishParsed = null;  // parsed JSON of the buffered finish_reason chunk
-  let pendingFinishLines = [];     // raw lines of the finish_reason event (event:, id:, data:)
+  let pendingFinishParsed = null;
+  let pendingFinishLines = [];
   let inPendingEvent = false;
   let mergeCount = 0;
 
   const originalWrite = res.write.bind(res);
+
+  function flushPending() {
+    if (pendingFinishParsed) {
+      for (const l of pendingFinishLines) originalWrite(l);
+      originalWrite('\n');
+      pendingFinishParsed = null;
+      pendingFinishLines = [];
+      inPendingEvent = false;
+    }
+  }
+
   res.write = (chunk, ...args) => {
+    // ── Diagnostics (string-only, no parse) ──
+    if (hasDiag) {
+      try {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        diag.chunks += 1;
+        diag.bytes += buf.length;
+        if (diag.firstChunkMs === null) diag.firstChunkMs = Date.now();
+        const text = buf.toString('utf8');
+        if (text.includes('tool_calls')) diag.sawToolCalls = true;
+        if (text.includes('finish_reason') && text.includes('tool_calls')) diag.sawFinishToolCalls = true;
+        if (text.includes('[DONE]')) diag.sawDone = true;
+      } catch {}
+    }
+
+    // ── Usage merger (line buffering with fast-path) ──
     const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : typeof chunk === 'string' ? chunk : String(chunk);
     lineBuf += text;
 
-    // 防止 lineBuf 无界增长（如 upstream 发了超长行或无换行数据）
     if (lineBuf.length > LINEBUF_MAX_BYTES) {
-      // 超限：flush 缓冲区，放弃 usage merge 保证安全
-      if (pendingFinishParsed) {
-        for (const l of pendingFinishLines) originalWrite(l);
-        originalWrite('\n');
-        pendingFinishParsed = null;
-        pendingFinishLines = [];
-        inPendingEvent = false;
-      }
+      flushPending();
       originalWrite(lineBuf);
       lineBuf = '';
       return true;
@@ -394,12 +374,8 @@ function installStreamingUsageMerger(res) {
       lineBuf = lineBuf.slice(nlIdx + 1);
       const trimmed = line.trim();
 
-      // Empty line = end of SSE event
       if (trimmed === '') {
         if (inPendingEvent && pendingFinishParsed) {
-          // We have a buffered finish_reason event. Don't forward yet -
-          // wait for the next event to see if it's a usage event.
-          // Keep the empty line in the buffer.
           pendingFinishLines.push(line);
         } else {
           originalWrite(line);
@@ -407,18 +383,20 @@ function installStreamingUsageMerger(res) {
         continue;
       }
 
-      // Data line
       if (trimmed.startsWith('data: ')) {
         const payload = trimmed.slice(6).trim();
 
         if (payload === '[DONE]') {
-          // Flush any pending finish_reason event before [DONE]
-          if (pendingFinishParsed) {
-            for (const l of pendingFinishLines) originalWrite(l);
-            originalWrite('\n');
-            pendingFinishParsed = null;
-            pendingFinishLines = [];
-          }
+          flushPending();
+          originalWrite(line);
+          continue;
+        }
+
+        // Fast-path: skip JSON.parse for content chunks (vast majority)
+        // Only parse if the payload might be a finish_reason or usage chunk
+        if (!payload.includes('"finish_reason"') && !payload.includes('"usage"')) {
+          // Regular content chunk — flush pending if any, then forward
+          flushPending();
           originalWrite(line);
           continue;
         }
@@ -427,24 +405,15 @@ function installStreamingUsageMerger(res) {
         try {
           parsed = JSON.parse(payload);
         } catch {
-          // Parse error - flush pending and forward as-is
-          if (pendingFinishParsed) {
-            for (const l of pendingFinishLines) originalWrite(l);
-            originalWrite('\n');
-            pendingFinishParsed = null;
-            pendingFinishLines = [];
-            inPendingEvent = false;
-          }
+          flushPending();
           originalWrite(line);
           continue;
         }
 
         // Usage-only chunk (choices: [] with usage) + we have a buffered finish_reason
         if (Array.isArray(parsed.choices) && parsed.choices.length === 0 && parsed.usage && pendingFinishParsed) {
-          // Merge usage into the buffered finish_reason chunk
           pendingFinishParsed.usage = parsed.usage;
           const mergedLine = `data: ${JSON.stringify(pendingFinishParsed)}\n`;
-          // Replace the data line in pendingFinishLines
           for (let i = 0; i < pendingFinishLines.length; i++) {
             if (pendingFinishLines[i].trim().startsWith('data: ')) {
               pendingFinishLines[i] = mergedLine;
@@ -458,7 +427,7 @@ function installStreamingUsageMerger(res) {
           pendingFinishParsed = null;
           pendingFinishLines = [];
           inPendingEvent = false;
-          continue; // skip this usage chunk
+          continue;
         }
 
         // Finish_reason chunk with null usage - buffer it
@@ -471,15 +440,8 @@ function installStreamingUsageMerger(res) {
           continue;
         }
 
-        // Regular chunk - flush pending first
-        if (pendingFinishParsed) {
-          for (const l of pendingFinishLines) originalWrite(l);
-          originalWrite('\n');
-          pendingFinishParsed = null;
-          pendingFinishLines = [];
-          inPendingEvent = false;
-        }
-
+        // Regular chunk with data - flush pending first
+        flushPending();
         originalWrite(line);
       } else {
         // Non-data line (event:, id:, etc.)
@@ -496,16 +458,28 @@ function installStreamingUsageMerger(res) {
 
   const originalEnd = res.end.bind(res);
   res.end = (chunk, ...args) => {
+    if (hasDiag) {
+      if (chunk) {
+        try {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+          diag.bytes += buf.length;
+          const text = buf.toString('utf8');
+          if (text.includes('tool_calls')) diag.sawToolCalls = true;
+          if (text.includes('finish_reason') && text.includes('tool_calls')) diag.sawFinishToolCalls = true;
+          if (text.includes('[DONE]')) diag.sawDone = true;
+        } catch {}
+      }
+
+      if (!diag.loggedEnd) {
+        diag.loggedEnd = true;
+        console.log(`🧰 MiMo tool diag end requestId=${diag.requestId} model=${diag.model} stream=${diag.stream} chunks=${diag.chunks} bytes=${diag.bytes} durationMs=${Date.now() - diag.startMs} firstChunkMs=${diag.firstChunkMs ? diag.firstChunkMs - diag.startMs : 'none'} sawToolCalls=${diag.sawToolCalls} sawFinishToolCalls=${diag.sawFinishToolCalls} sawDone=${diag.sawDone}`);
+      }
+    }
+
     if (chunk) {
       res.write(chunk);
     }
-    // Flush any remaining buffered data — 通过 res.write 走完整调用链
-    if (pendingFinishParsed) {
-      for (const l of pendingFinishLines) originalWrite(l);
-      originalWrite('\n');
-      pendingFinishParsed = null;
-      pendingFinishLines = [];
-    }
+    flushPending();
     if (lineBuf.trim()) {
       originalWrite(lineBuf);
       lineBuf = '';
@@ -513,6 +487,12 @@ function installStreamingUsageMerger(res) {
     return originalEnd(...args);
   };
 }
+
+function logToolCallFailure(diag, accountId, err) {
+  if (!diag) return;
+  console.error(`🧰 MiMo tool diag failure requestId=${diag.requestId} accountId=${accountId || '-'} model=${diag.model} stream=${diag.stream} chunks=${diag.chunks} bytes=${diag.bytes} durationMs=${Date.now() - diag.startMs} firstChunkMs=${diag.firstChunkMs ? diag.firstChunkMs - diag.startMs : 'none'} sawToolCalls=${diag.sawToolCalls} sawFinishToolCalls=${diag.sawFinishToolCalls} sawDone=${diag.sawDone} error=${err?.message || err}`);
+}
+
 
 /**
  * 创建代理处理器（支持 tunnel → HTTP 回退 + 多 upstream 重试）
@@ -529,9 +509,11 @@ export function createProxyHandler(registry, sendTunnelRequest) {
     let model = null;
     let strippedBody = body;
     let isRequestStream = false;
+    let parsedBody = null;
     if (body) {
       try {
         let finalParsed = JSON.parse(body);
+        parsedBody = finalParsed;
         model = finalParsed.model || null;
         isRequestStream = !!finalParsed.stream;
         let bodyModified = false;
@@ -568,14 +550,11 @@ export function createProxyHandler(registry, sendTunnelRequest) {
     const toolDiag = createToolCallDiagnostics(strippedBody, model, requestId);
     if (toolDiag) {
       console.log(`🧰 MiMo tool diag start requestId=${toolDiag.requestId} model=${toolDiag.model} stream=${toolDiag.stream} tools=${toolDiag.tools} messages=${toolDiag.messages} toolResults=${toolDiag.toolResults} assistantToolCalls=${toolDiag.assistantToolCalls} bodyBytes=${toolDiag.bodyBytes}`);
-      installToolCallDiagnostics(res, toolDiag);
     }
 
-    // Install streaming usage merger for streaming requests
-    // MiMo sends usage in a separate final chunk; this merges it into the finish_reason chunk
-    // so proxies like CC Switch can properly convert to Anthropic format
-    if (isRequestStream) {
-      installStreamingUsageMerger(res);
+    // Install combined streaming interceptors (diagnostics + usage merger)
+    if (isRequestStream || toolDiag) {
+      installStreamingInterceptors(res, toolDiag);
     }
 
     // ─── 重试循环 ───────────────────────────────────────
@@ -614,7 +593,7 @@ export function createProxyHandler(registry, sendTunnelRequest) {
             path: req.url,
             headers: { ...req.headers, host: undefined, ...(requestId ? { 'x-keypool-request-id': requestId } : {}) },
             body: strippedBody || null,
-          }, { res, timeoutMs: getMimoTunnelTimeoutMs(strippedBody, model) });
+          }, { res, timeoutMs: getMimoTunnelTimeoutMs(parsedBody || strippedBody, model) });
 
           // tunnel.mjs 传入 opts.res 后会直接写入 HTTP 响应（流式透传）
           // 此时 res.headersSent 已为 true，不能再重试

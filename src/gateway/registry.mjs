@@ -11,6 +11,9 @@ export class Registry {
   constructor() {
     /** @type {Map<string, InstanceState>} accountId → state */
     this.instances = new Map();
+    this._gen = 0;
+    this._sortedCache = null;
+    this._sortedCacheGen = -1;
   }
 
   // ─── 实例状态管理（Manager 调用） ────────────────────────────
@@ -19,11 +22,13 @@ export class Registry {
     const state = this.instances.get(accountId) || {};
     state.status = status;
     this.instances.set(accountId, state);
+    this._gen++;
   }
 
   updateInstanceState(accountId, patch = {}) {
     const state = this.instances.get(accountId) || {};
     this.instances.set(accountId, { ...state, ...patch });
+    this._gen++;
   }
 
   getInstanceState(accountId) {
@@ -53,27 +58,34 @@ export class Registry {
     const now = Date.now();
     const HEALTH_RECOVERY_MS = 60_000;
 
-    const list = [...this.instances.values()]
-      .filter(s => s && s.verified && (s.proxyUrl || s.baseUrl || s.localUrl || s.tunnel))
-      .filter(s => !s.status || ['ACTIVE', 'DEPLOYED_UNVERIFIED'].includes(s.status))
-      .filter(s => !excludeAccountIds.has(s.accountId))
-      .filter(s => {
-        if (s.healthOk !== false) return true;
-        if (includeUnhealthy) return true;
-        // allow recovery after 60s
-        const failAt = s.lastHealthErrorAt ? Date.parse(s.lastHealthErrorAt) || 0 : 0;
-        if (failAt && (now - failAt) > HEALTH_RECOVERY_MS) return true;
-        return false;
-      });
+    // 排序缓存：仅当 _gen 变化（setInstanceStatus / updateInstanceState）时重新排序
+    let sorted;
+    if (this._sortedCache && this._sortedCacheGen === this._gen) {
+      sorted = this._sortedCache;
+    } else {
+      sorted = [...this.instances.values()]
+        .filter(s => s && s.verified && (s.proxyUrl || s.baseUrl || s.localUrl || s.tunnel))
+        .filter(s => !s.status || ['ACTIVE', 'DEPLOYED_UNVERIFIED'].includes(s.status))
+        .sort((a, b) => {
+          const pa = Number.isFinite(a.priority) ? a.priority : 100;
+          const pb = Number.isFinite(b.priority) ? b.priority : 100;
+          if (pa !== pb) return pa - pb;
+          const va = a.lastVerifiedAt ? Date.parse(a.lastVerifiedAt) || 0 : 0;
+          const vb = b.lastVerifiedAt ? Date.parse(b.lastVerifiedAt) || 0 : 0;
+          return vb - va;
+        });
+      this._sortedCache = sorted;
+      this._sortedCacheGen = this._gen;
+    }
 
-    // model filtering: instances don't carry model info, so pass all upstreams through
-    return list.sort((a, b) => {
-      const pa = Number.isFinite(a.priority) ? a.priority : 100;
-      const pb = Number.isFinite(b.priority) ? b.priority : 100;
-      if (pa !== pb) return pa - pb;
-      const va = a.lastVerifiedAt ? Date.parse(a.lastVerifiedAt) || 0 : 0;
-      const vb = b.lastVerifiedAt ? Date.parse(b.lastVerifiedAt) || 0 : 0;
-      return vb - va;
+    // 动态过滤（健康状态、排除列表）— 每次请求都要评估，但从已排序列表开始
+    return sorted.filter(s => {
+      if (excludeAccountIds.has(s.accountId)) return false;
+      if (s.healthOk !== false) return true;
+      if (includeUnhealthy) return true;
+      const failAt = s.lastHealthErrorAt ? Date.parse(s.lastHealthErrorAt) || 0 : 0;
+      if (failAt && (now - failAt) > HEALTH_RECOVERY_MS) return true;
+      return false;
     });
   }
 
@@ -134,6 +146,7 @@ export class Registry {
     const old = this.instances.get(accountId);
     if (!old) return;
     this.instances.set(accountId, { ...old, ...updates });
+    // 不递增 _gen — 仅健康指标变更，排序字段（priority/lastVerifiedAt）未变
   }
 
   /**

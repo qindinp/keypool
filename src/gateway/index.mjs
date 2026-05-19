@@ -27,48 +27,45 @@ async function collectModels(registry, tunnel) {
   const models = new Map();
   const upstreams = registry.getVerifiedUpstreams();
 
-  for (const upstream of upstreams) {
+  const results = await Promise.allSettled(upstreams.map(async (upstream) => {
     const baseUrl = upstream.proxyUrl || upstream.baseUrl || upstream.localUrl;
 
-    // HTTP 直连模式
     if (baseUrl) {
-      try {
-        const res = await fetch(new URL('/v1/models', baseUrl).toString());
-        if (!res.ok) continue;
-        const payload = await res.json();
-        for (const item of Array.isArray(payload?.data) ? payload.data : []) {
-          if (!item?.id) continue;
-          models.set(item.id, {
-            id: item.id,
-            object: item.object || 'model',
-            owned_by: item.owned_by || upstream.accountId,
-          });
-        }
-      } catch (err) {
-        console.warn(`⚠️ collectModels [${upstream.accountId}]: ${err.message}`);
-      }
-      continue;
+      const res = await fetch(new URL('/v1/models', baseUrl).toString());
+      if (!res.ok) return [];
+      const payload = await res.json();
+      return (Array.isArray(payload?.data) ? payload.data : [])
+        .filter(item => item?.id)
+        .map(item => ({
+          id: item.id,
+          object: item.object || 'model',
+          owned_by: item.owned_by || upstream.accountId,
+        }));
     }
 
-    // Tunnel 模式：通过 tunnel 查询远端 /v1/models
     if (upstream.tunnel) {
-      try {
-        const resp = await tunnel.sendProxyRequest(upstream.tunnel, {
-          method: 'GET',
-          path: '/v1/models',
-          headers: { 'content-type': 'application/json' },
-        }, { timeoutMs: 10_000 });
-        const payload = JSON.parse(resp.body || '{}');
-        for (const item of Array.isArray(payload?.data) ? payload.data : []) {
-          if (!item?.id) continue;
-          models.set(item.id, {
-            id: item.id,
-            object: item.object || 'model',
-            owned_by: item.owned_by || upstream.accountId,
-          });
-        }
-      } catch (err) {
-        console.warn(`⚠️ collectModels [tunnel:${upstream.accountId}]: ${err.message}`);
+      const resp = await tunnel.sendProxyRequest(upstream.tunnel, {
+        method: 'GET',
+        path: '/v1/models',
+        headers: { 'content-type': 'application/json' },
+      }, { timeoutMs: 10_000 });
+      const payload = JSON.parse(resp.body || '{}');
+      return (Array.isArray(payload?.data) ? payload.data : [])
+        .filter(item => item?.id)
+        .map(item => ({
+          id: item.id,
+          object: item.object || 'model',
+          owned_by: item.owned_by || upstream.accountId,
+        }));
+    }
+
+    return [];
+  }));
+
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      for (const item of result.value) {
+        models.set(item.id, item);
       }
     }
   }
